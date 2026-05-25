@@ -7,6 +7,12 @@
     from signfinder.templates import find_matching_templates
     from signfinder.pdf import apply_signature
     from signfinder.pipeline import run_pipeline_auto_1, validate_with_llm
+
+FIX v1.9.1:
+  - analyze(): guard на пустой pdf_bytes перед fitz.open
+  - analyze(): отдельный try/except на fitz.open с человекочитаемым сообщением
+    вместо голого PyMuPDF Exception("0")
+  - build_anchor_from_click(): аналогичный guard
 """
 from __future__ import annotations
 
@@ -75,17 +81,7 @@ class AnalysisResult:
 # ── SignFinder facade ─────────────────────────────────────────────────────────
 
 class SignFinder:
-    """Facade для SignFinder core.
-
-    Минимальный пример:
-        sf = SignFinder()                # читает env vars
-        result = sf.analyze(pdf_bytes, language="ru")
-        signed = sf.sign(pdf_bytes, result.anchors, png_bytes)
-
-    Явная конфигурация:
-        sf = SignFinder(storage_mode="local", storage_path="./data",
-                        anthropic_api_key="sk-ant-...")
-    """
+    """Facade для SignFinder core."""
 
     def __init__(
         self,
@@ -111,19 +107,15 @@ class SignFinder:
         language: Optional[str] = None,
         filename: str = "document.pdf",
     ) -> AnalysisResult:
-        """Полный анализ документа: matcher → шаблон (зелёный) | pipeline (жёлтый).
-
-        Точное соответствие флоу pages/5_🤖_Авто_подписание.py v1.8:
-          0. parse + detect_language + compute_fingerprint
-          0. find_matching_templates (шаг 0 матчер)
-          🟢 → apply_template_to_doc → AnalysisResult
-          🟡 → run_pipeline_auto_1 (step3+step4+step5) → AnalysisResult
-
-        Валидатор НЕ вызывается автоматически — как в оригинале.
-        Вызвать явно если нужно:
-            validate_with_llm(result.matches, party_name, sf.llm, rules)
-        """
+        """Полный анализ документа: matcher → шаблон (зелёный) | pipeline (жёлтый)."""
         import fitz
+
+        # Guard: пустой или слишком маленький файл
+        if not pdf_bytes or len(pdf_bytes) < 4:
+            return AnalysisResult(
+                traffic_light="no_match",
+                error="pdf_bytes пустой или слишком маленький — невалидный PDF",
+            )
 
         # 0. Parse
         doc = parse_pdf_bytes(pdf_bytes, filename=filename)
@@ -134,22 +126,30 @@ class SignFinder:
             lang = "ru"
 
         # 0. Fingerprint + Matcher
+        # FIX: отдельный try на fitz.open — PyMuPDF бросает Exception("0")
+        # для повреждённых/зашифрованных PDF вместо нормального исключения
         try:
             fitz_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            try:
-                fp = compute_fingerprint(fitz_doc, lang)
-                matcher = find_matching_templates(
-                    fitz_doc, lang,
-                    storage=self.storage,
-                    fingerprint=fp,
-                )
-            finally:
-                fitz_doc.close()
+        except Exception as e:
+            return AnalysisResult(
+                traffic_light="no_match",
+                error=f"Не удалось открыть PDF в fitz (повреждён или зашифрован?): {e}",
+            )
+
+        try:
+            fp = compute_fingerprint(fitz_doc, lang)
+            matcher = find_matching_templates(
+                fitz_doc, lang,
+                storage=self.storage,
+                fingerprint=fp,
+            )
         except Exception as e:
             return AnalysisResult(
                 traffic_light="no_match",
                 error=f"Matcher error: {e}",
             )
+        finally:
+            fitz_doc.close()
 
         # Зелёный → применить шаблон
         if matcher.traffic_light == "green" and matcher.best_match:
@@ -203,11 +203,7 @@ class SignFinder:
         png_bytes: bytes,
         flatten: bool = False,
     ) -> bytes:
-        """Наложить PNG-подпись на PDF.
-
-        Принимает list[TextAnchor] или list[SignMatch].
-        TextAnchor конвертируется в SignMatch через _to_match().
-        """
+        """Наложить PNG-подпись на PDF."""
         matches = [self._to_match(a) for a in anchors_or_matches]
         return apply_signature(pdf_bytes, matches, png_bytes, flatten=flatten)
 
@@ -221,7 +217,12 @@ class SignFinder:
     ) -> Optional[TextAnchor]:
         """Строит TextAnchor по клику (ручная доразметка)."""
         import fitz
-        fitz_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        if not pdf_bytes or len(pdf_bytes) < 4:
+            return None
+        try:
+            fitz_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        except Exception:
+            return None
         try:
             return build_anchor_from_click(fitz_doc, page, x, y, language)
         finally:
@@ -258,26 +259,20 @@ class SignFinder:
 
 __all__ = [
     "__version__",
-    # Facade
     "SignFinder",
     "AnalysisResult",
-    # Config
     "Config",
-    # Storage
     "StorageBackend",
     "create_storage",
-    # LLM
     "LLMClient",
     "LLMError",
     "AnthropicClient",
-    # PDF
     "ParsedDocument",
     "parse_document",
     "parse_pdf_bytes",
     "apply_signature",
     "render_page_with_highlights",
     "detect_language",
-    # Anchors
     "TextAnchor",
     "SignMatch",
     "build_anchor_from_click",
@@ -285,7 +280,6 @@ __all__ = [
     "regex_match_to_anchor",
     "apply_template_anchors",
     "parse_parties_json",
-    # Templates
     "DocumentTemplate",
     "MatcherResult",
     "find_matching_templates",
@@ -295,11 +289,8 @@ __all__ = [
     "new_template",
     "update_usage_stats",
     "add_anchors_to_template",
-    # Fingerprint
     "compute_fingerprint",
-    # Traffic light
     "classify",
-    # Pipeline
     "run_pipeline_auto_1",
     "PipelineResult",
     "apply_template_to_doc",
