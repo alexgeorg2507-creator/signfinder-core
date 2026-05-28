@@ -1,10 +1,11 @@
-"""Реализация LLMClient через Anthropic Claude API."""
+"""Anthropic Claude LLM client — v1.10 (обновлён)."""
 from __future__ import annotations
 
+import json
 import os
-from typing import Optional
+from typing import Any, Optional
 
-from signfinder.llm.base import LLMClient, LLMError
+from signfinder.llm.base import LLMClient, LLMError, _parse_json_response
 from signfinder.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -15,7 +16,10 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 class AnthropicClient(LLMClient):
     """LLMClient на базе Anthropic SDK.
 
-    API key берётся из конструктора или из env ANTHROPIC_API_KEY.
+    API key берётся из:
+      1. конструктор api_key=
+      2. llm_config.json (через signfinder.llm.config)
+      3. env ANTHROPIC_API_KEY
     """
 
     def __init__(
@@ -23,21 +27,29 @@ class AnthropicClient(LLMClient):
         api_key: Optional[str] = None,
         model: str = DEFAULT_MODEL,
     ):
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self._explicit_key = api_key
         self.model = model
-        # Lazy client — создаём при первом вызове, чтобы конструктор не падал
-        # если ключа нет (для on-prem где LLM может быть отключён в принципе)
         self._client = None
+
+    def _get_key(self) -> str:
+        if self._explicit_key:
+            return self._explicit_key
+        # Try config/env
+        try:
+            from signfinder.llm.config import get_api_key
+            return get_api_key("anthropic")
+        except RuntimeError:
+            pass
+        raise LLMError("ANTHROPIC_API_KEY не задан")
 
     def _ensure_client(self):
         if self._client is None:
-            if not self.api_key:
-                raise LLMError("ANTHROPIC_API_KEY не задан")
+            key = self._get_key()
             try:
                 from anthropic import Anthropic
             except ImportError as e:
                 raise LLMError("anthropic SDK не установлен") from e
-            self._client = Anthropic(api_key=self.api_key)
+            self._client = Anthropic(api_key=key)
         return self._client
 
     def complete(
@@ -62,16 +74,44 @@ class AnthropicClient(LLMClient):
 
         if not resp.content:
             return ""
-        # content[0] обычно TextBlock
         block = resp.content[0]
         return (getattr(block, "text", "") or "").strip()
 
-    def is_available(self) -> bool:
-        """True если API key есть и SDK импортируется."""
-        if not self.api_key:
-            return False
+    def complete_structured(
+        self,
+        system: str,
+        user: str,
+        expected_json_schema: dict[str, Any],
+        max_tokens: int = 1024,
+    ) -> dict[str, Any]:
+        """Native Anthropic: system + user раздельно."""
+        client = self._ensure_client()
+        system_full = (
+            f"{system}\n\n"
+            "Respond ONLY with valid JSON matching this schema. "
+            "No markdown, no explanation.\n"
+            f"Schema: {json.dumps(expected_json_schema)}"
+        )
         try:
+            resp = client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system_full,
+                messages=[{"role": "user", "content": user}],
+            )
+        except Exception as e:
+            raise LLMError(str(e)) from e
+        text = (getattr(resp.content[0], "text", "") or "").strip()
+        return _parse_json_response(text, "anthropic")
+
+    def is_available(self) -> bool:
+        try:
+            self._get_key()
             import anthropic  # noqa: F401
             return True
-        except ImportError:
+        except Exception:
             return False
+
+    @property
+    def provider_name(self) -> str:
+        return "anthropic"

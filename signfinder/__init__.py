@@ -1,10 +1,13 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
-FIX v1.9.2:
-  - AnalysisResult теперь содержит поле fingerprint (dict).
-    API возвращает его клиенту → Streamlit использует при сохранении шаблона.
-    Без этого шаблон сохранялся с fingerprint от Streamlit-core (другой
-    extract_section_titles) → jaccard=0.20 при матчинге API → всегда yellow.
+v1.10.0:
+  - Мульти-LLM: Anthropic + OpenAI + DeepSeek + Gemini через LLMClient abstraction
+  - LLM конфиг через llm_config.json (UI) с fallback на env vars
+  - SignFinder() без явного llm= — берёт провайдер из конфига
+  - Backward compat: AnthropicClient(api_key=...) работает как раньше
+
+v1.9.2:
+  - AnalysisResult содержит поле fingerprint (dict).
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ from signfinder.anchors import (
 )
 from signfinder.config import Config
 from signfinder.fingerprint import compute_fingerprint
-from signfinder.llm import AnthropicClient, LLMClient, LLMError
+from signfinder.llm import AnthropicClient, LLMClient, LLMError, create_client
 from signfinder.pdf import (
     ParsedDocument,
     apply_signature,
@@ -52,7 +55,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -68,7 +71,6 @@ class AnalysisResult:
     our_side: Optional[dict] = None
     error: Optional[str] = None
     pipeline_debug: dict = field(default_factory=dict)
-    # FIX v1.9.2: fingerprint computed by API — used by Streamlit when saving templates
     fingerprint: Optional[dict[str, Any]] = None
 
 
@@ -89,10 +91,20 @@ class SignFinder:
             path=self.config.storage_path,
             bucket=self.config.gcs_bucket,
         )
-        self.llm: LLMClient = llm or AnthropicClient(
-            api_key=self.config.anthropic_api_key,
-            model=self.config.anthropic_model,
-        )
+
+        if llm is not None:
+            # Явно передан клиент — используем как есть (backward compat)
+            self.llm: LLMClient = llm
+        else:
+            # v1.10: берём из llm_config.json → env → fallback на Anthropic
+            try:
+                self.llm = create_client()
+            except RuntimeError:
+                # Конфиг не настроен — старый путь через env ANTHROPIC_API_KEY
+                self.llm = AnthropicClient(
+                    api_key=self.config.anthropic_api_key,
+                    model=self.config.anthropic_model,
+                )
 
     def analyze(
         self,
@@ -153,7 +165,7 @@ class SignFinder:
                         applied_template=tpl,
                         matches=tpl_matches,
                         anchors=tpl_anchors,
-                        fingerprint=fp,  # FIX v1.9.2
+                        fingerprint=fp,
                     )
 
         pipeline = run_pipeline_auto_1(
@@ -169,7 +181,7 @@ class SignFinder:
                 matcher_result=matcher,
                 error=pipeline.error,
                 pipeline_debug=pipeline.debug,
-                fingerprint=fp,  # FIX v1.9.2
+                fingerprint=fp,
             )
 
         return AnalysisResult(
@@ -179,7 +191,7 @@ class SignFinder:
             matches=pipeline.matches,
             our_side=pipeline.our_side,
             pipeline_debug=pipeline.debug,
-            fingerprint=fp,  # FIX v1.9.2
+            fingerprint=fp,
         )
 
     def sign(self, pdf_bytes: bytes, anchors_or_matches: list, png_bytes: bytes, flatten: bool = False) -> bytes:
@@ -221,12 +233,13 @@ class SignFinder:
 
 __all__ = [
     "__version__", "SignFinder", "AnalysisResult", "Config", "StorageBackend",
-    "create_storage", "LLMClient", "LLMError", "AnthropicClient", "ParsedDocument",
-    "parse_document", "parse_pdf_bytes", "apply_signature", "render_page_with_highlights",
-    "detect_language", "TextAnchor", "SignMatch", "build_anchor_from_click",
-    "build_anchor_from_regex_match", "regex_match_to_anchor", "apply_template_anchors",
-    "parse_parties_json", "DocumentTemplate", "MatcherResult", "find_matching_templates",
-    "list_templates", "load_template", "save_template", "new_template", "update_usage_stats",
-    "add_anchors_to_template", "compute_fingerprint", "classify", "run_pipeline_auto_1",
-    "PipelineResult", "apply_template_to_doc", "save_pipeline_template", "validate_with_llm",
+    "create_storage", "LLMClient", "LLMError", "AnthropicClient", "create_client",
+    "ParsedDocument", "parse_document", "parse_pdf_bytes", "apply_signature",
+    "render_page_with_highlights", "detect_language", "TextAnchor", "SignMatch",
+    "build_anchor_from_click", "build_anchor_from_regex_match", "regex_match_to_anchor",
+    "apply_template_anchors", "parse_parties_json", "DocumentTemplate", "MatcherResult",
+    "find_matching_templates", "list_templates", "load_template", "save_template",
+    "new_template", "update_usage_stats", "add_anchors_to_template", "compute_fingerprint",
+    "classify", "run_pipeline_auto_1", "PipelineResult", "apply_template_to_doc",
+    "save_pipeline_template", "validate_with_llm",
 ]
