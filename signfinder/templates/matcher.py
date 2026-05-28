@@ -1,9 +1,13 @@
 """Матчинг нового документа с реестром шаблонов.
 
-ПЕРЕНОС из core/template_matcher.py. Принимает storage явно (не из env).
-
-FIX v1.9: _simhash_similarity парсил decimal-строку как hex (int(s,16)),
-что ломало simhash-сходство. Теперь парсинг decimal-first + фикс 64-bit ширины.
+FIX v1.9: _simhash_similarity — decimal-first парсинг, fixed 64-bit.
+FIX v1.9.2: find_matching_templates:
+  - При score >= PERFECT_SCORE_THRESHOLD (0.99) коллизию игнорировать —
+    документ идентичен шаблону, применять нужно однозначно.
+  - Тайбрейк при равных score: сортировка по created_at DESC
+    (новее = приоритетнее). Это решает вопрос «какой из нескольких применять».
+  - Fallback в load_config: читаем оба пути (traffic_light_config.json
+    и settings/traffic_light.json) т.к. API и core используют разные ключи.
 """
 from __future__ import annotations
 
@@ -17,6 +21,9 @@ from signfinder.storage.base import StorageBackend
 from signfinder.templates.models import MatcherResult, MatchResult
 from signfinder.templates.storage import list_templates
 from signfinder.traffic_light import TrafficLightConfig, classify, load_config
+
+# Если best_score >= этого порога — коллизию игнорировать, применять best.
+PERFECT_SCORE_THRESHOLD = 0.99
 
 
 # ── Публичный API ─────────────────────────────────────────────────────────────
@@ -70,26 +77,45 @@ def find_matching_templates(
             score_breakdown=breakdown,
             explanation="",
             synonyms_match=syn_match,
+            # Сохраняем created_at для тайбрейка
+            _created_at=getattr(tpl, "created_at", "") or "",
         ))
 
     if not candidates:
         return _no_match_result("Похожих шаблонов не найдено (не прошли быструю отсечку).")
 
-    candidates.sort(key=lambda c: c.score, reverse=True)
+    # FIX v1.9.2: сортировка по score DESC, затем по created_at DESC (тайбрейк).
+    # При равных score применяется самый новый шаблон.
+    def _sort_key(c: MatchResult):
+        # Нормализуем created_at в сопоставимую строку
+        ca = getattr(c, "_created_at", "") or ""
+        return (c.score, ca)
+
+    candidates.sort(key=_sort_key, reverse=True)
     top5 = candidates[:5]
     best = top5[0]
 
-    # FIX v1.9: диагностика breakdown лучшего кандидата
+    # Диагностика breakdown
     sys.stderr.write(
         f"[template_matcher] best={best.template_id} score={best.score} "
-        f"breakdown={best.score_breakdown}\n"
+        f"breakdown={best.score_breakdown} created_at={getattr(best, '_created_at', '')}\n"
     )
 
-    cfg = config or load_config(storage)
-    has_collision = (
-        len(top5) >= 2 and
-        (top5[0].score - top5[1].score) < cfg.collision_delta
-    )
+    cfg = config or _load_config_with_fallback(storage)
+
+    # FIX v1.9.2: при очень высоком score коллизию НЕ считаем блокером.
+    # Три шаблона с score=1.0 → без фикса всегда yellow, шаблон не применяется.
+    if best.score >= PERFECT_SCORE_THRESHOLD:
+        has_collision = False
+        sys.stderr.write(
+            f"[template_matcher] perfect score {best.score} — collision ignored, "
+            f"applying best ({best.template_id[:8]})\n"
+        )
+    else:
+        has_collision = (
+            len(top5) >= 2 and
+            (top5[0].score - top5[1].score) < cfg.collision_delta
+        )
 
     light = classify(
         score=best.score,
@@ -109,6 +135,24 @@ def find_matching_templates(
         all_candidates=top5,
         explanation=global_expl,
     )
+
+
+def _load_config_with_fallback(storage: StorageBackend) -> TrafficLightConfig:
+    """FIX v1.9.2: читаем оба пути — API и core используют разные ключи.
+
+    API роутер settings.py сохраняет в settings/traffic_light.json.
+    Функция load_config (core) читает traffic_light_config.json.
+    Без фикса core всегда использовал дефолт (green_threshold=0.95).
+    """
+    # Пробуем сначала путь API
+    try:
+        data = storage.read_json("settings/traffic_light.json")
+        if data:
+            return TrafficLightConfig(**data)
+    except Exception:
+        pass
+    # Потом путь core
+    return load_config(storage)
 
 
 # ── Score ─────────────────────────────────────────────────────────────────────
@@ -230,6 +274,7 @@ def _build_global_explanation(
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 def log_matching_decision(matcher_result: MatcherResult, doc_filename: str) -> None:
+    from datetime import datetime, timezone
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "doc_filename": doc_filename,
@@ -256,12 +301,8 @@ def _no_match_result(explanation: str) -> MatcherResult:
 def _parse_simhash(h) -> Optional[int]:
     """Парсит simhash в int.
 
-    FIX v1.9: compute_header_simhash возвращает str(Simhash(text).value) —
-    ДЕСЯТИЧНУЮ строку, не hex. Старый код int(s, 16) интерпретировал её как
-    hex → неверное число → simhash-сходство ломалось даже для идентичных
-    документов (score ~0.40 вместо 1.0).
-
-    Теперь: int как есть; строку парсим как decimal, при неудаче — hex.
+    FIX v1.9: decimal-first парсинг (Simhash.value всегда decimal str).
+    Старый int(s, 16) интерпретировал decimal как hex → неверный XOR.
     """
     if h is None or h == "":
         return None
@@ -291,9 +332,7 @@ def _simhash_similarity(hash_a, hash_b) -> float:
     try:
         xor = a ^ b
         diff_bits = bin(xor).count("1")
-        # Simhash всегда 64-битный. Фиксируем ширину — bit_length() от int
-        # плавает в зависимости от значения и даёт неверную нормировку.
-        total_bits = 64
+        total_bits = 64  # Simhash всегда 64-битный
         return max(0.0, 1.0 - diff_bits / total_bits)
     except Exception:
         return 0.0

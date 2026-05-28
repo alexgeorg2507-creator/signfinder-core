@@ -35,6 +35,8 @@ class MatchResult:
     score_breakdown: dict
     explanation: str
     synonyms_match: bool
+    # FIX v1.9.2: тайбрейк при равных score — применяем самый новый шаблон
+    _created_at: str = ""
 
 
 @dataclass
