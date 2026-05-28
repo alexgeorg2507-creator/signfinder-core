@@ -1,6 +1,9 @@
 """Матчинг нового документа с реестром шаблонов.
 
 ПЕРЕНОС из core/template_matcher.py. Принимает storage явно (не из env).
+
+FIX v1.9: _simhash_similarity парсил decimal-строку как hex (int(s,16)),
+что ломало simhash-сходство. Теперь парсинг decimal-first + фикс 64-bit ширины.
 """
 from __future__ import annotations
 
@@ -26,15 +29,7 @@ def find_matching_templates(
     fingerprint: Optional[dict] = None,
     config: Optional[TrafficLightConfig] = None,
 ) -> MatcherResult:
-    """Главная функция матчинга.
-
-    doc: fitz.Document (уже открытый)
-    language: "ru"/"en"/"pl"
-    storage: StorageBackend для чтения шаблонов и конфига светофора
-    our_synonyms: синонимы нашей стороны если известны (из step3)
-    fingerprint: если уже посчитан — не считаем заново
-    config: TrafficLightConfig (если None — грузится из storage)
-    """
+    """Главная функция матчинга."""
     # 1. Fingerprint
     if fingerprint is None:
         try:
@@ -83,6 +78,12 @@ def find_matching_templates(
     candidates.sort(key=lambda c: c.score, reverse=True)
     top5 = candidates[:5]
     best = top5[0]
+
+    # FIX v1.9: диагностика breakdown лучшего кандидата
+    sys.stderr.write(
+        f"[template_matcher] best={best.template_id} score={best.score} "
+        f"breakdown={best.score_breakdown}\n"
+    )
 
     cfg = config or load_config(storage)
     has_collision = (
@@ -252,16 +253,48 @@ def _no_match_result(explanation: str) -> MatcherResult:
     )
 
 
+def _parse_simhash(h) -> Optional[int]:
+    """Парсит simhash в int.
+
+    FIX v1.9: compute_header_simhash возвращает str(Simhash(text).value) —
+    ДЕСЯТИЧНУЮ строку, не hex. Старый код int(s, 16) интерпретировал её как
+    hex → неверное число → simhash-сходство ломалось даже для идентичных
+    документов (score ~0.40 вместо 1.0).
+
+    Теперь: int как есть; строку парсим как decimal, при неудаче — hex.
+    """
+    if h is None or h == "":
+        return None
+    if isinstance(h, bool):
+        return None
+    if isinstance(h, int):
+        return h
+    if isinstance(h, str):
+        s = h.strip()
+        if not s:
+            return None
+        try:
+            return int(s, 10)
+        except ValueError:
+            try:
+                return int(s, 16)
+            except ValueError:
+                return None
+    return None
+
+
 def _simhash_similarity(hash_a, hash_b) -> float:
-    if hash_a is None or hash_b is None:
+    a = _parse_simhash(hash_a)
+    b = _parse_simhash(hash_b)
+    if a is None or b is None:
         return 0.0
     try:
-        a = int(hash_a, 16) if isinstance(hash_a, str) else int(hash_a)
-        b = int(hash_b, 16) if isinstance(hash_b, str) else int(hash_b)
         xor = a ^ b
         diff_bits = bin(xor).count("1")
-        total_bits = max(a.bit_length(), b.bit_length(), 64)
-        return 1.0 - diff_bits / total_bits
+        # Simhash всегда 64-битный. Фиксируем ширину — bit_length() от int
+        # плавает в зависимости от значения и даёт неверную нормировку.
+        total_bits = 64
+        return max(0.0, 1.0 - diff_bits / total_bits)
     except Exception:
         return 0.0
 
