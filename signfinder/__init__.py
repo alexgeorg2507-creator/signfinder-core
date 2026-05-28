@@ -1,23 +1,15 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
-Главный фасад — класс SignFinder. Покрывает 90% сценариев.
-
-Тонкие сценарии — прямые импорты подмодулей:
-    from signfinder.anchors import find_signatures, build_anchor_from_click
-    from signfinder.templates import find_matching_templates
-    from signfinder.pdf import apply_signature
-    from signfinder.pipeline import run_pipeline_auto_1, validate_with_llm
-
-FIX v1.9.1:
-  - analyze(): guard на пустой pdf_bytes перед fitz.open
-  - analyze(): отдельный try/except на fitz.open с человекочитаемым сообщением
-    вместо голого PyMuPDF Exception("0")
-  - build_anchor_from_click(): аналогичный guard
+FIX v1.9.2:
+  - AnalysisResult теперь содержит поле fingerprint (dict).
+    API возвращает его клиенту → Streamlit использует при сохранении шаблона.
+    Без этого шаблон сохранялся с fingerprint от Streamlit-core (другой
+    extract_section_titles) → jaccard=0.20 при матчинге API → всегда yellow.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from signfinder.anchors import (
     SignMatch,
@@ -68,20 +60,21 @@ __version__ = "1.9.0"
 @dataclass
 class AnalysisResult:
     """Итог SignFinder.analyze()."""
-    traffic_light: str                               # "green" | "yellow" | "no_match"
+    traffic_light: str
     matcher_result: Optional[MatcherResult] = None
     applied_template: Optional[DocumentTemplate] = None
-    anchors: list = field(default_factory=list)      # list[TextAnchor]
-    matches: list = field(default_factory=list)      # list[SignMatch]
+    anchors: list = field(default_factory=list)
+    matches: list = field(default_factory=list)
     our_side: Optional[dict] = None
     error: Optional[str] = None
     pipeline_debug: dict = field(default_factory=dict)
+    # FIX v1.9.2: fingerprint computed by API — used by Streamlit when saving templates
+    fingerprint: Optional[dict[str, Any]] = None
 
 
 # ── SignFinder facade ─────────────────────────────────────────────────────────
 
 class SignFinder:
-    """Facade для SignFinder core."""
 
     def __init__(
         self,
@@ -106,36 +99,29 @@ class SignFinder:
         pdf_bytes: bytes,
         language: Optional[str] = None,
         filename: str = "document.pdf",
-    ) -> AnalysisResult:
-        """Полный анализ документа: matcher → шаблон (зелёный) | pipeline (жёлтый)."""
+    ) -> "AnalysisResult":
         import fitz
 
-        # Guard: пустой или слишком маленький файл
         if not pdf_bytes or len(pdf_bytes) < 4:
             return AnalysisResult(
                 traffic_light="no_match",
                 error="pdf_bytes пустой или слишком маленький — невалидный PDF",
             )
 
-        # 0. Parse
         doc = parse_pdf_bytes(pdf_bytes, filename=filename)
-
-        # 0. Language
         lang = language or detect_language(doc, llm=self.llm)
         if not lang or lang == "unknown":
             lang = "ru"
 
-        # 0. Fingerprint + Matcher
-        # FIX: отдельный try на fitz.open — PyMuPDF бросает Exception("0")
-        # для повреждённых/зашифрованных PDF вместо нормального исключения
         try:
             fitz_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         except Exception as e:
             return AnalysisResult(
                 traffic_light="no_match",
-                error=f"Не удалось открыть PDF в fitz (повреждён или зашифрован?): {e}",
+                error=f"Не удалось открыть PDF в fitz: {e}",
             )
 
+        fp = None
         try:
             fp = compute_fingerprint(fitz_doc, lang)
             matcher = find_matching_templates(
@@ -147,11 +133,11 @@ class SignFinder:
             return AnalysisResult(
                 traffic_light="no_match",
                 error=f"Matcher error: {e}",
+                fingerprint=fp,
             )
         finally:
             fitz_doc.close()
 
-        # Зелёный → применить шаблон
         if matcher.traffic_light == "green" and matcher.best_match:
             tpl = load_template(self.storage, matcher.best_match.template_id)
             if tpl is not None:
@@ -167,11 +153,9 @@ class SignFinder:
                         applied_template=tpl,
                         matches=tpl_matches,
                         anchors=tpl_anchors,
+                        fingerprint=fp,  # FIX v1.9.2
                     )
-                # Якоря не применились — падаем на pipeline
-            # Шаблон не нашёлся — падаем на pipeline
 
-        # Жёлтый или шаблон не применился → run_pipeline_auto_1
         pipeline = run_pipeline_auto_1(
             doc=doc,
             language=lang,
@@ -185,6 +169,7 @@ class SignFinder:
                 matcher_result=matcher,
                 error=pipeline.error,
                 pipeline_debug=pipeline.debug,
+                fingerprint=fp,  # FIX v1.9.2
             )
 
         return AnalysisResult(
@@ -194,28 +179,14 @@ class SignFinder:
             matches=pipeline.matches,
             our_side=pipeline.our_side,
             pipeline_debug=pipeline.debug,
+            fingerprint=fp,  # FIX v1.9.2
         )
 
-    def sign(
-        self,
-        pdf_bytes: bytes,
-        anchors_or_matches: list,
-        png_bytes: bytes,
-        flatten: bool = False,
-    ) -> bytes:
-        """Наложить PNG-подпись на PDF."""
+    def sign(self, pdf_bytes: bytes, anchors_or_matches: list, png_bytes: bytes, flatten: bool = False) -> bytes:
         matches = [self._to_match(a) for a in anchors_or_matches]
         return apply_signature(pdf_bytes, matches, png_bytes, flatten=flatten)
 
-    def build_anchor_from_click(
-        self,
-        pdf_bytes: bytes,
-        page: int,
-        x: float,
-        y: float,
-        language: str = "ru",
-    ) -> Optional[TextAnchor]:
-        """Строит TextAnchor по клику (ручная доразметка)."""
+    def build_anchor_from_click(self, pdf_bytes: bytes, page: int, x: float, y: float, language: str = "ru") -> Optional[TextAnchor]:
         import fitz
         if not pdf_bytes or len(pdf_bytes) < 4:
             return None
@@ -227,8 +198,6 @@ class SignFinder:
             return build_anchor_from_click(fitz_doc, page, x, y, language)
         finally:
             fitz_doc.close()
-
-    # ── helpers ───────────────────────────────────────────────────────────
 
     @staticmethod
     def _to_match(item) -> SignMatch:
@@ -245,55 +214,19 @@ class SignFinder:
                     page = int(ph)
                 except (ValueError, TypeError):
                     page = 0
-            return SignMatch(
-                id=item.id,
-                page=page,
-                bbox=item.bbox,
-                context=item.anchor_text,
-                party="anchor",
-                pattern=item.generated_pattern,
-                confidence=1.0,
-            )
+            return SignMatch(id=item.id, page=page, bbox=item.bbox, context=item.anchor_text,
+                             party="anchor", pattern=item.generated_pattern, confidence=1.0)
         raise TypeError(f"Expected SignMatch or TextAnchor, got {type(item).__name__}")
 
 
 __all__ = [
-    "__version__",
-    "SignFinder",
-    "AnalysisResult",
-    "Config",
-    "StorageBackend",
-    "create_storage",
-    "LLMClient",
-    "LLMError",
-    "AnthropicClient",
-    "ParsedDocument",
-    "parse_document",
-    "parse_pdf_bytes",
-    "apply_signature",
-    "render_page_with_highlights",
-    "detect_language",
-    "TextAnchor",
-    "SignMatch",
-    "build_anchor_from_click",
-    "build_anchor_from_regex_match",
-    "regex_match_to_anchor",
-    "apply_template_anchors",
-    "parse_parties_json",
-    "DocumentTemplate",
-    "MatcherResult",
-    "find_matching_templates",
-    "list_templates",
-    "load_template",
-    "save_template",
-    "new_template",
-    "update_usage_stats",
-    "add_anchors_to_template",
-    "compute_fingerprint",
-    "classify",
-    "run_pipeline_auto_1",
-    "PipelineResult",
-    "apply_template_to_doc",
-    "save_pipeline_template",
-    "validate_with_llm",
+    "__version__", "SignFinder", "AnalysisResult", "Config", "StorageBackend",
+    "create_storage", "LLMClient", "LLMError", "AnthropicClient", "ParsedDocument",
+    "parse_document", "parse_pdf_bytes", "apply_signature", "render_page_with_highlights",
+    "detect_language", "TextAnchor", "SignMatch", "build_anchor_from_click",
+    "build_anchor_from_regex_match", "regex_match_to_anchor", "apply_template_anchors",
+    "parse_parties_json", "DocumentTemplate", "MatcherResult", "find_matching_templates",
+    "list_templates", "load_template", "save_template", "new_template", "update_usage_stats",
+    "add_anchors_to_template", "compute_fingerprint", "classify", "run_pipeline_auto_1",
+    "PipelineResult", "apply_template_to_doc", "save_pipeline_template", "validate_with_llm",
 ]
