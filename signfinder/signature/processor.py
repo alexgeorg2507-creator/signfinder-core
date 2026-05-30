@@ -45,7 +45,14 @@ def process_signature(image_bytes: bytes) -> SignatureProcessResult:
     img_array = np.array(pil_rgba)
     input_h, input_w = img_array.shape[:2]
 
-    bgr = cv2.cvtColor(img_array[:, :, :3], cv2.COLOR_RGB2BGR)
+    # Composite на белый фон перед HSV-анализом:
+    # прозрачные пиксели в RGBA имеют RGB=(0,0,0) и детектируются как чёрные чернила.
+    # Накладываем на белый фон — тогда прозрачное = белое = не чернила.
+    white_bg = Image.new("RGBA", pil_rgba.size, (255, 255, 255, 255))
+    composited = Image.alpha_composite(white_bg, pil_rgba).convert("RGB")
+    comp_array = np.array(composited)
+
+    bgr = cv2.cvtColor(comp_array, cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
     # ── Шаг 2: Двойная детекция чернил ───────────────────────────────────────
