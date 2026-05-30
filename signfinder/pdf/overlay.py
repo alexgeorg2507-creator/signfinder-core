@@ -35,6 +35,11 @@ def apply_signature(
     png_w, png_h = img.size
     aspect = png_w / png_h if png_h else 1.0
 
+    # Подготовить stream для insert_image:
+    # PyMuPDF корректно обрабатывает альфа только если передать
+    # отдельно RGB-поток и маску (mask=). Конвертируем RGBA → RGB + mask.
+    img_rgb, mask_bytes = _split_rgba_png(img)
+
     for m in matches:
         if getattr(m, "operator_excluded", False) or getattr(m, "status", "") == "rejected_by_llm":
             continue
@@ -65,7 +70,7 @@ def apply_signature(
             anchor_x + sig_w,
             anchor_y_bottom,
         )
-        page.insert_image(sig_rect, stream=png_bytes, keep_proportion=True)
+        page.insert_image(sig_rect, stream=img_rgb, mask=mask_bytes, keep_proportion=True)
 
     out_bytes = doc.tobytes(deflate=True)
     doc.close()
@@ -111,6 +116,29 @@ def _find_underscore_anchor(page, bbox, pattern: str):
 
     bbox_width = x1 - x0
     return x0 + bbox_width * 0.3, y1, line_height
+
+
+def _split_rgba_png(img: Image.Image) -> tuple[bytes, bytes | None]:
+    """Разделить PIL Image на RGB-поток PNG и альфа-маску PNG.
+
+    insert_image(stream=rgb, mask=alpha) — единственный надёжный способ
+    передать прозрачность в PyMuPDF независимо от версии.
+    """
+    if img.mode == "RGBA":
+        r, g, b, a = img.split()
+        rgb_img = Image.merge("RGB", (r, g, b))
+        buf_rgb = io.BytesIO()
+        rgb_img.save(buf_rgb, format="PNG")
+
+        buf_mask = io.BytesIO()
+        a.save(buf_mask, format="PNG")
+
+        return buf_rgb.getvalue(), buf_mask.getvalue()
+
+    # Если не RGBA — отдаём как есть, mask=None
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    return buf.getvalue(), None
 
 
 def _flatten_pdf(pdf_bytes: bytes) -> bytes:
