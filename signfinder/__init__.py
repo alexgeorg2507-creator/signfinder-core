@@ -55,7 +55,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.13.1"
+__version__ = "1.13.2"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -194,9 +194,9 @@ class SignFinder:
             fingerprint=fp,
         )
 
-    def sign(self, pdf_bytes: bytes, anchors_or_matches: list, png_bytes: bytes, flatten: bool = False) -> bytes:
+    def sign(self, pdf_bytes: bytes, anchors_or_matches: list, png_bytes: bytes, flatten: bool = False, scale: float = 1.0) -> bytes:
         matches = [self._to_match(a) for a in anchors_or_matches]
-        return apply_signature(pdf_bytes, matches, png_bytes, flatten=flatten)
+        return apply_signature(pdf_bytes, matches, png_bytes, flatten=flatten, scale=scale)
 
     def build_anchor_from_click(self, pdf_bytes: bytes, page: int, x: float, y: float, language: str = "ru") -> Optional[TextAnchor]:
         import fitz

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import io
-import sys
 
 try:
     import fitz
@@ -11,11 +10,12 @@ except ImportError:
 from PIL import Image
 
 
-# Высота подписи: max(MIN_PT, line_height × MULTIPLIER), но не больше MAX_PT
-MIN_SIGNATURE_HEIGHT_PT = 30
-MAX_SIGNATURE_HEIGHT_PT = 50         # потолок — защита от аномальных bbox
-LINE_HEIGHT_MULTIPLIER = 3
-MAX_BBOX_HEIGHT_FOR_LINE_PT = 25     # bbox выше этого считаем аномальным
+# Целевая высота подписи в pt (15мм × 2.835 pt/mm ≈ 42pt)
+# Ширина вычисляется из aspect ratio обработанного PNG.
+# При необходимости — параметр scale в apply_signature.
+DEFAULT_SIGNATURE_HEIGHT_PT = 42
+MAX_SIGNATURE_HEIGHT_PT = 85       # hard cap — защита от аномалий
+MIN_SIGNATURE_HEIGHT_PT = 20
 
 
 def apply_signature(
@@ -23,12 +23,14 @@ def apply_signature(
     matches: list,
     png_bytes: bytes,
     flatten: bool = False,
+    scale: float = 1.0,
 ) -> bytes:
     """Наложить PNG подписи на PDF в местах указанных matches.
 
     matches — list[SignMatch] из anchors.models. У каждого должны быть
     bbox (x0,y0,x1,y1), page (0-indexed), pattern (str).
     Поля operator_excluded и status='rejected_by_llm' — фильтруются.
+    scale — мультипликатор размера (1.0 = 15мм высота, 42pt).
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     img = Image.open(io.BytesIO(png_bytes))
@@ -40,29 +42,18 @@ def apply_signature(
     # отдельно RGB-поток и маску (mask=). Конвертируем RGBA → RGB + mask.
     img_rgb, mask_bytes = _split_rgba_png(img)
 
+    sig_h = min(
+        max(MIN_SIGNATURE_HEIGHT_PT, DEFAULT_SIGNATURE_HEIGHT_PT * scale),
+        MAX_SIGNATURE_HEIGHT_PT,
+    )
+    sig_w = sig_h * aspect
+
     for m in matches:
         if getattr(m, "operator_excluded", False) or getattr(m, "status", "") == "rejected_by_llm":
             continue
 
         page = doc[m.page]
-        anchor_x, anchor_y_bottom, line_height = _find_underscore_anchor(page, m.bbox, m.pattern)
-
-        # Sanity: если "line_height" аномально большой — фолбэк 12pt
-        if line_height > MAX_BBOX_HEIGHT_FOR_LINE_PT:
-            sys.stderr.write(
-                f"[overlay] anomalous line_height={line_height:.1f} for match {m.id} "
-                f"(bbox={m.bbox}), clamping to 12pt\n"
-            )
-            line_height = 12.0
-
-        sig_h = max(MIN_SIGNATURE_HEIGHT_PT, line_height * LINE_HEIGHT_MULTIPLIER)
-        if sig_h > MAX_SIGNATURE_HEIGHT_PT:
-            sys.stderr.write(
-                f"[overlay] sig_h={sig_h:.1f} capped to {MAX_SIGNATURE_HEIGHT_PT} "
-                f"for match {m.id}\n"
-            )
-            sig_h = MAX_SIGNATURE_HEIGHT_PT
-        sig_w = sig_h * aspect
+        anchor_x, anchor_y_bottom, _ = _find_underscore_anchor(page, m.bbox, m.pattern)
 
         sig_rect = fitz.Rect(
             anchor_x,
