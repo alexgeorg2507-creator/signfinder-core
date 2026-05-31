@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "signfinder-core"
-version = "1.13.3"
+version = "1.14.0"
 description = "Core engine for SignFinder — automatic signature placement in contracts"
 authors = [{name = "alexgeorg2507", email = "alexgeorg2507@gmail.com"}]
 license = {text = "MIT"}

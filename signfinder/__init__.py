@@ -1,5 +1,10 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.14.0:
+  - apply_signature(): use_signature / use_marker / marker_color
+  - Маркер места подписи (4×12мм, правое поле, pink/gray)
+  - SignFinder.sign() пробрасывает новые параметры
+
 v1.10.0:
   - Мульти-LLM: Anthropic + OpenAI + DeepSeek + Gemini через LLMClient abstraction
   - LLM конфиг через llm_config.json (UI) с fallback на env vars
@@ -55,7 +60,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.13.3"
+__version__ = "1.14.0"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -93,14 +98,11 @@ class SignFinder:
         )
 
         if llm is not None:
-            # Явно передан клиент — используем как есть (backward compat)
             self.llm: LLMClient = llm
         else:
-            # v1.10: берём из llm_config.json → env → fallback на Anthropic
             try:
                 self.llm = create_client()
             except RuntimeError:
-                # Конфиг не настроен — старый путь через env ANTHROPIC_API_KEY
                 self.llm = AnthropicClient(
                     api_key=self.config.anthropic_api_key,
                     model=self.config.anthropic_model,
@@ -194,9 +196,25 @@ class SignFinder:
             fingerprint=fp,
         )
 
-    def sign(self, pdf_bytes: bytes, anchors_or_matches: list, png_bytes: bytes, flatten: bool = False, scale: float = 1.0) -> bytes:
+    def sign(
+        self,
+        pdf_bytes: bytes,
+        anchors_or_matches: list,
+        png_bytes: bytes | None,
+        flatten: bool = False,
+        scale: float = 1.0,
+        use_signature: bool = True,
+        use_marker: bool = False,
+        marker_color: str = "pink",
+    ) -> bytes:
         matches = [self._to_match(a) for a in anchors_or_matches]
-        return apply_signature(pdf_bytes, matches, png_bytes, flatten=flatten, scale=scale)
+        return apply_signature(
+            pdf_bytes, matches, png_bytes,
+            flatten=flatten, scale=scale,
+            use_signature=use_signature,
+            use_marker=use_marker,
+            marker_color=marker_color,
+        )
 
     def build_anchor_from_click(self, pdf_bytes: bytes, page: int, x: float, y: float, language: str = "ru") -> Optional[TextAnchor]:
         import fitz

@@ -1,4 +1,4 @@
-"""Наложение PNG-подписи на PDF и опциональный flatten."""
+"""Наложение PNG-подписи на PDF, маркер места подписи, опциональный flatten. v1.14.0"""
 from __future__ import annotations
 
 import io
@@ -11,10 +11,8 @@ from PIL import Image
 
 
 # Целевая высота подписи в pt (15мм × 2.835 pt/mm ≈ 42pt)
-# Ширина вычисляется из aspect ratio обработанного PNG.
-# При необходимости — параметр scale в apply_signature.
 DEFAULT_SIGNATURE_HEIGHT_PT = 42
-MAX_SIGNATURE_HEIGHT_PT = 85       # hard cap — защита от аномалий
+MAX_SIGNATURE_HEIGHT_PT = 85
 MIN_SIGNATURE_HEIGHT_PT = 20
 
 # Горизонтальный сдвиг от левого края подчёркивания (pt)
@@ -24,32 +22,37 @@ SIGNATURE_X_OFFSET_PT = 20
 def apply_signature(
     pdf_bytes: bytes,
     matches: list,
-    png_bytes: bytes,
+    png_bytes: bytes | None,
     flatten: bool = False,
     scale: float = 1.0,
+    use_signature: bool = True,
+    use_marker: bool = False,
+    marker_color: str = "pink",
 ) -> bytes:
-    """Наложить PNG подписи на PDF в местах указанных matches.
+    """Наложить PNG подписи и/или маркер места подписи на PDF.
 
-    matches — list[SignMatch] из anchors.models. У каждого должны быть
-    bbox (x0,y0,x1,y1), page (0-indexed), pattern (str).
-    Поля operator_excluded и status='rejected_by_llm' — фильтруются.
-    scale — мультипликатор размера (1.0 = 15мм высота, 42pt).
+    matches — list[SignMatch] из anchors.models.
+    png_bytes — может быть None если use_signature=False.
+    use_signature — вставлять PNG подпись.
+    use_marker   — рисовать прямоугольный маркер на правом поле (4×12мм).
+    marker_color — "pink" (255,182,193) | "gray" (180,180,180).
+    scale — мультипликатор размера подписи (1.0 = 42pt).
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    img = Image.open(io.BytesIO(png_bytes))
-    png_w, png_h = img.size
-    aspect = png_w / png_h if png_h else 1.0
 
-    # Подготовить stream для insert_image:
-    # PyMuPDF корректно обрабатывает альфа только если передать
-    # отдельно RGB-поток и маску (mask=). Конвертируем RGBA → RGB + mask.
-    img_rgb, mask_bytes = _split_rgba_png(img)
-
-    sig_h = min(
-        max(MIN_SIGNATURE_HEIGHT_PT, DEFAULT_SIGNATURE_HEIGHT_PT * scale),
-        MAX_SIGNATURE_HEIGHT_PT,
-    )
-    sig_w = sig_h * aspect
+    # Подготовить PNG один раз — только если нужен
+    img_rgb, mask_bytes = None, None
+    sig_h, sig_w = 0.0, 0.0
+    if use_signature and png_bytes:
+        img = Image.open(io.BytesIO(png_bytes))
+        png_w, png_h = img.size
+        aspect = png_w / png_h if png_h else 1.0
+        img_rgb, mask_bytes = _split_rgba_png(img)
+        sig_h = min(
+            max(MIN_SIGNATURE_HEIGHT_PT, DEFAULT_SIGNATURE_HEIGHT_PT * scale),
+            MAX_SIGNATURE_HEIGHT_PT,
+        )
+        sig_w = sig_h * aspect
 
     for m in matches:
         if getattr(m, "operator_excluded", False) or getattr(m, "status", "") == "rejected_by_llm":
@@ -57,14 +60,30 @@ def apply_signature(
 
         page = doc[m.page]
         anchor_x, anchor_y_bottom, _ = _find_underscore_anchor(page, m.bbox, m.pattern)
+        bbox = list(m.bbox)  # [x0, y0, x1, y1]
 
-        sig_rect = fitz.Rect(
-            anchor_x,
-            anchor_y_bottom - sig_h,
-            anchor_x + sig_w,
-            anchor_y_bottom,
-        )
-        page.insert_image(sig_rect, stream=img_rgb, mask=mask_bytes, keep_proportion=True)
+        # PNG подпись
+        if use_signature and img_rgb is not None:
+            sig_rect = fitz.Rect(
+                anchor_x,
+                anchor_y_bottom - sig_h,
+                anchor_x + sig_w,
+                anchor_y_bottom,
+            )
+            page.insert_image(sig_rect, stream=img_rgb, mask=mask_bytes, keep_proportion=True)
+
+        # Маркер: ~4×12мм прямоугольник на правом поле, выровнен по центру строки якоря
+        if use_marker:
+            pw = page.rect.width
+            y_center = (bbox[1] + bbox[3]) / 2
+            marker_rect = fitz.Rect(
+                pw - 14.0,
+                y_center - 17.0,
+                pw - 3.0,
+                y_center + 17.0,
+            )
+            fill = (1.0, 0.714, 0.757) if marker_color != "gray" else (0.706, 0.706, 0.706)
+            page.draw_rect(marker_rect, fill=fill, color=None, width=0)
 
     out_bytes = doc.tobytes(deflate=True)
     doc.close()
@@ -76,13 +95,7 @@ def apply_signature(
 
 
 def _find_underscore_anchor(page, bbox, pattern: str):
-    """Найти позицию подчёркиваний для размещения подписи.
-
-    Стратегия:
-    1. Если pattern начинается с '_' — underscores в начале bbox, anchor=bbox.x0
-    2. Иначе ищем '___' через page.search_for и фильтруем по y и x
-    3. Fallback: anchor=bbox.x0 + 30% ширины
-    """
+    """Найти позицию подчёркиваний для размещения подписи."""
     x0, y0, x1, y1 = bbox
     line_height = y1 - y0
 
@@ -106,7 +119,6 @@ def _find_underscore_anchor(page, bbox, pattern: str):
             best = r
 
     if best:
-        # +SIGNATURE_X_OFFSET_PT сдвиг вправо от края подчёркивания (≈7мм)
         return best.x0 + SIGNATURE_X_OFFSET_PT, best.y1, max(line_height, best.height)
 
     bbox_width = x1 - x0
