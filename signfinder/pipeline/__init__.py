@@ -3,6 +3,7 @@
 - auto1.run_pipeline_auto_1  — step3+step4+step5 (точный перенос v1.8)
 - auto1.apply_template_to_doc — применение шаблона без session_state
 - auto1.save_pipeline_template — сохранение DocumentTemplate
+- dedup.dedup_anchors          — удаление дублей якорей (перенесено из Streamlit v1.15)
 - party_resolver.resolve_party — определение стороны по ФИО (отдельный шаг, не в пайплайне)
 - pattern_extractor           — генерация/сужение regex (расширенная версия для API)
 - llm_finder                  — LLM-only fallback поиска (не входит в базовый пайплайн)
@@ -18,6 +19,7 @@ from signfinder.pipeline.auto1 import (
     run_step5,
     save_pipeline_template,
 )
+from signfinder.pipeline.dedup import dedup_anchors
 from signfinder.pipeline.llm_finder import find_signatures_llm
 from signfinder.pipeline.party_resolver import resolve_party
 from signfinder.pipeline.pattern_extractor import (
@@ -48,6 +50,8 @@ __all__ = [
     "run_step5",
     "apply_template_to_doc",
     "save_pipeline_template",
+    # Dedup (v1.15 — перенесено из Streamlit в core)
+    "dedup_anchors",
     # Validator (вызывается явно, не входит в базовый пайплайн)
     "validate_with_llm",
     # Party resolver (отдельная операция)

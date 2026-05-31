@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "signfinder-core"
-version = "1.14.0"
+version = "1.15.0"
 description = "Core engine for SignFinder — automatic signature placement in contracts"
 authors = [{name = "alexgeorg2507", email = "alexgeorg2507@gmail.com"}]
 license = {text = "MIT"}
@@ -26,7 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gcs = ["google-cloud-storage>=2.10"]
-dev = ["pytest>=7.4", "pytest-cov>=4.1", "black>=23.0", "ruff>=0.1"]
+dev = ["pytest>=7.4", "pytest-cov>=4.1", "pytest-json-report>=1.5", "black>=23.0", "ruff>=0.1"]
 
 [tool.setuptools.packages.find]
 where = ["."]

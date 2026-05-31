@@ -1,4 +1,7 @@
-"""Тесты storage abstraction."""
+"""Тесты storage abstraction (v1.15).
+
+Включает регрессию: .read() / .write() не существуют → AttributeError.
+"""
 from __future__ import annotations
 
 import pytest
@@ -33,7 +36,6 @@ def test_local_storage_exists_and_delete(tmp_path):
     assert storage.exists("a/b/c.dat") is True
     assert storage.delete("a/b/c.dat") is True
     assert storage.exists("a/b/c.dat") is False
-    # Повторное удаление — False
     assert storage.delete("a/b/c.dat") is False
 
 
@@ -65,7 +67,6 @@ def test_factory_local_mode(tmp_path, monkeypatch):
 def test_factory_explicit_overrides_env(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_MODE", "gcs")
     monkeypatch.setenv("GCS_BUCKET", "should-be-ignored")
-    # mode="local" перекрывает env
     storage = create_storage(mode="local", path=str(tmp_path))
     assert isinstance(storage, LocalFilesystemStorage)
 
@@ -77,7 +78,40 @@ def test_factory_unknown_mode_raises(monkeypatch):
 
 
 def test_protocol_compliance(tmp_path):
-    """LocalFilesystemStorage соответствует StorageBackend Protocol."""
     from signfinder.storage import StorageBackend
     storage = LocalFilesystemStorage(str(tmp_path))
     assert isinstance(storage, StorageBackend)
+
+
+# ── REGRESSION: несуществующие методы должны давать AttributeError ───────────
+
+def test_read_method_does_not_exist(tmp_path):
+    """sf.storage.read() не существует → AttributeError (не тихий None)."""
+    storage = LocalFilesystemStorage(str(tmp_path))
+    assert not hasattr(storage, "read"), "read() не должен существовать в StorageBackend"
+
+
+def test_write_method_does_not_exist(tmp_path):
+    """sf.storage.write() не существует → AttributeError."""
+    storage = LocalFilesystemStorage(str(tmp_path))
+    assert not hasattr(storage, "write"), "write() не должен существовать в StorageBackend"
+
+
+def test_get_method_does_not_exist(tmp_path):
+    """sf.storage.get() не существует."""
+    storage = LocalFilesystemStorage(str(tmp_path))
+    assert not hasattr(storage, "get")
+
+
+def test_put_method_does_not_exist(tmp_path):
+    """sf.storage.put() не существует."""
+    storage = LocalFilesystemStorage(str(tmp_path))
+    assert not hasattr(storage, "put")
+
+
+def test_correct_methods_exist(tmp_path):
+    """Правильные методы: read_bytes, write_bytes, read_json, write_json, exists, delete, list_prefix."""
+    storage = LocalFilesystemStorage(str(tmp_path))
+    for method in ("read_bytes", "write_bytes", "read_json", "write_json",
+                   "read_text", "write_text", "exists", "delete", "list_prefix"):
+        assert hasattr(storage, method), f"Метод {method} отсутствует"

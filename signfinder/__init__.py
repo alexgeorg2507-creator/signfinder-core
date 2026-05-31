@@ -1,5 +1,11 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.15.0:
+  - Автотесты: unit (fingerprint, matcher, dedup, overlay, storage, sig_processor)
+  - Integration-тесты с мок-LLM
+  - dedup_anchors перенесён из Streamlit в core (signfinder.pipeline.dedup)
+  - /v1/corpus endpoint (GET/PUT corpus.json)
+
 v1.14.0:
   - apply_signature(): use_signature / use_marker / marker_color
   - Маркер места подписи (4×12мм, правое поле, pink/gray)
@@ -46,6 +52,7 @@ from signfinder.pipeline import (
     save_pipeline_template,
     validate_with_llm,
 )
+from signfinder.pipeline.dedup import dedup_anchors
 from signfinder.storage import StorageBackend, create_storage
 from signfinder.templates import (
     DocumentTemplate,
@@ -60,7 +67,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.14.0"
+__version__ = "1.15.0"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -259,5 +266,5 @@ __all__ = [
     "find_matching_templates", "list_templates", "load_template", "save_template",
     "new_template", "update_usage_stats", "add_anchors_to_template", "compute_fingerprint",
     "classify", "run_pipeline_auto_1", "PipelineResult", "apply_template_to_doc",
-    "save_pipeline_template", "validate_with_llm",
+    "save_pipeline_template", "validate_with_llm", "dedup_anchors",
 ]
