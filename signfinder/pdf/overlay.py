@@ -17,6 +17,9 @@ DEFAULT_SIGNATURE_HEIGHT_PT = 42
 MAX_SIGNATURE_HEIGHT_PT = 85       # hard cap — защита от аномалий
 MIN_SIGNATURE_HEIGHT_PT = 20
 
+# Горизонтальный сдвиг от левого края подчёркивания (pt)
+SIGNATURE_X_OFFSET_PT = 20
+
 
 def apply_signature(
     pdf_bytes: bytes,
@@ -84,7 +87,7 @@ def _find_underscore_anchor(page, bbox, pattern: str):
     line_height = y1 - y0
 
     if pattern.startswith("_"):
-        return x0, y1, line_height
+        return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
 
     underscore_rects = page.search_for("___")
 
@@ -103,18 +106,15 @@ def _find_underscore_anchor(page, bbox, pattern: str):
             best = r
 
     if best:
-        return best.x0, best.y1, max(line_height, best.height)
+        # +SIGNATURE_X_OFFSET_PT сдвиг вправо от края подчёркивания (≈7мм)
+        return best.x0 + SIGNATURE_X_OFFSET_PT, best.y1, max(line_height, best.height)
 
     bbox_width = x1 - x0
     return x0 + bbox_width * 0.3, y1, line_height
 
 
 def _split_rgba_png(img: Image.Image) -> tuple[bytes, bytes | None]:
-    """Разделить PIL Image на RGB-поток PNG и альфа-маску PNG.
-
-    insert_image(stream=rgb, mask=alpha) — единственный надёжный способ
-    передать прозрачность в PyMuPDF независимо от версии.
-    """
+    """Разделить PIL Image на RGB-поток PNG и альфа-маску PNG."""
     if img.mode == "RGBA":
         r, g, b, a = img.split()
         rgb_img = Image.merge("RGB", (r, g, b))
@@ -126,7 +126,6 @@ def _split_rgba_png(img: Image.Image) -> tuple[bytes, bytes | None]:
 
         return buf_rgb.getvalue(), buf_mask.getvalue()
 
-    # Если не RGBA — отдаём как есть, mask=None
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="PNG")
     return buf.getvalue(), None
