@@ -1,5 +1,9 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.16.0:
+  - signfinder.intake: Protocol IntakeSource/IntakeSink, ImapSource, SmtpSink
+  - build_processed_email helper для IMAP APPEND
+
 v1.15.0:
   - Автотесты: unit (fingerprint, matcher, dedup, overlay, storage, sig_processor)
   - Integration-тесты с мок-LLM
@@ -67,7 +71,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.15.0"
+__version__ = "1.16.0"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
