@@ -94,6 +94,32 @@ def apply_signature(
     return out_bytes
 
 
+def _find_first_underscore_char_x(page, y0: float, y1: float, x0: float, x1: float):
+    """Точный x первого символа '_' в полосе [y0,y1] x-диапазон [x0,x1].
+
+    Использует rawdict — обходит проблему, когда search_for('___') возвращает
+    x0 всего текстового спана (включая роль 'Заказчик'), а не x первого '_'.
+    """
+    try:
+        data = page.get_text("rawdict", flags=0)
+        for block in data.get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    for ch in span.get("chars", []):
+                        if ch.get("c") != "_":
+                            continue
+                        cb = ch.get("bbox", (0, 0, 0, 0))
+                        ch_yc = (cb[1] + cb[3]) / 2
+                        if ch_yc < y0 - 2 or ch_yc > y1 + 2:
+                            continue
+                        if cb[0] < x0 - 5 or cb[0] > x1:
+                            continue
+                        return float(cb[0])
+    except Exception:
+        pass
+    return None
+
+
 def _find_underscore_anchor(page, bbox, pattern: str):
     """Найти позицию подчёркиваний для размещения подписи."""
     x0, y0, x1, y1 = bbox
@@ -102,6 +128,14 @@ def _find_underscore_anchor(page, bbox, pattern: str):
     if pattern.startswith("_"):
         return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
 
+    # Приоритет 1: точная позиция первого '_' через rawdict (char-level)
+    # Решает проблему, когда 'Заказчик______' — один спан и search_for
+    # возвращает x0 всего спана вместо x первого подчёркивания.
+    char_x = _find_first_underscore_char_x(page, y0, y1, x0, x1)
+    if char_x is not None:
+        return char_x + SIGNATURE_X_OFFSET_PT, y1, line_height
+
+    # Приоритет 2: search_for("___") — fallback для нестандартных PDF
     underscore_rects = page.search_for("___")
 
     best = None

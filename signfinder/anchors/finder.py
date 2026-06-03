@@ -320,7 +320,12 @@ def find_signatures(doc: ParsedDocument, party: dict) -> list[SignMatch]:
                         pre_ctx = text[pre_start:m.start()]
                         if _is_alias_in_role_phrase(pre_ctx, matched_text, our_alias_tokens):
                             continue
-                    if not _has_real_signature_line(matched_text):
+                    # Проверяем подпись-линию в самом тексте ИЛИ в контексте
+                    # перед совпадением — это ловит паттерны вида "______ (Имя)",
+                    # где подчёркивание идёт ДО имени и сам matched_text его не содержит.
+                    pre_ctx_start = max(0, m.start() - 50)
+                    pre_ctx = text[pre_ctx_start:m.start()]
+                    if not _has_real_signature_line(matched_text + pre_ctx):
                         continue
                     span_key = (m.start(), m.end())
                     if span_key in seen_text_spans:
