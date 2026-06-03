@@ -94,12 +94,52 @@ def apply_signature(
     return out_bytes
 
 
-def _find_first_underscore_char_x(page, y0: float, y1: float, x0: float, x1: float):
-    """Точный x первого символа '_' в полосе [y0,y1] x-диапазон [x0,x1].
+def _extract_literal_prefix(pattern: str) -> str:
+    """Извлечь литеральный текстовый префикс паттерна до первого спецсимвола.
 
-    Использует rawdict — обходит проблему, когда search_for('___') возвращает
-    x0 всего текстового спана (включая роль 'Заказчик'), а не x первого '_'.
+    'Заказчик[\\s_]{0,50}_{3,}' → 'Заказчик'
+    '_{3,}'                      → ''
+    '\\(Лебедев'                 → ''
     """
+    special = frozenset(r'[]()\\.+*?{}^$|')
+    result = []
+    for ch in pattern:
+        if ch in special:
+            break
+        result.append(ch)
+    return ''.join(result).strip()
+
+
+def _find_underscore_anchor(page, bbox, pattern: str):
+    """Найти позицию подчёркиваний для размещения подписи.
+
+    Логика приоритетов:
+    1. Паттерн начинается с '_' → используем x0 bbox + offset.
+    2. Паттерн имеет текстовый префикс (например 'Заказчик') → ищем его
+       на странице, берём правый край (x1) — это начало зоны подписи.
+       Надёжнее rawdict т.к. не зависит от кодировки символов в PDF.
+    3. Rawdict char-level — fallback.
+    4. search_for("___") — fallback.
+    5. Пропорциональный сдвиг от x0 — последний резерв.
+    """
+    x0, y0, x1, y1 = bbox
+    line_height = y1 - y0
+    y_center = (y0 + y1) / 2
+
+    # 1. Паттерн сам начинается с подчёркивания
+    if pattern.startswith("_"):
+        return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
+
+    # 2. Текстовый префикс роли (напр. "Заказчик") — самый надёжный метод:
+    #    находим текст на странице, берём его правый край rr.x1
+    prefix = _extract_literal_prefix(pattern)
+    if len(prefix) >= 2:
+        for rr in page.search_for(prefix):
+            rr_yc = (rr.y0 + rr.y1) / 2
+            if abs(rr_yc - y_center) < 5 and rr.x0 >= x0 - 5:
+                return rr.x1 + SIGNATURE_X_OFFSET_PT, y1, line_height
+
+    # 3. Rawdict char-level — точная позиция символа '_'
     try:
         data = page.get_text("rawdict", flags=0)
         for block in data.get("blocks", []):
@@ -114,30 +154,12 @@ def _find_first_underscore_char_x(page, y0: float, y1: float, x0: float, x1: flo
                             continue
                         if cb[0] < x0 - 5 or cb[0] > x1:
                             continue
-                        return float(cb[0])
+                        return float(cb[0]) + SIGNATURE_X_OFFSET_PT, y1, line_height
     except Exception:
         pass
-    return None
 
-
-def _find_underscore_anchor(page, bbox, pattern: str):
-    """Найти позицию подчёркиваний для размещения подписи."""
-    x0, y0, x1, y1 = bbox
-    line_height = y1 - y0
-
-    if pattern.startswith("_"):
-        return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
-
-    # Приоритет 1: точная позиция первого '_' через rawdict (char-level)
-    # Решает проблему, когда 'Заказчик______' — один спан и search_for
-    # возвращает x0 всего спана вместо x первого подчёркивания.
-    char_x = _find_first_underscore_char_x(page, y0, y1, x0, x1)
-    if char_x is not None:
-        return char_x + SIGNATURE_X_OFFSET_PT, y1, line_height
-
-    # Приоритет 2: search_for("___") — fallback для нестандартных PDF
+    # 4. search_for("___") — fallback для нестандартных PDF
     underscore_rects = page.search_for("___")
-
     best = None
     best_dist = float("inf")
     for r in underscore_rects:
@@ -145,18 +167,15 @@ def _find_underscore_anchor(page, bbox, pattern: str):
             continue
         if r.x0 < x0 - 10 or r.x0 > x1:
             continue
-        rc = (r.y0 + r.y1) / 2
-        bc = (y0 + y1) / 2
-        d = abs(rc - bc)
+        d = abs((r.y0 + r.y1) / 2 - y_center)
         if d < best_dist:
             best_dist = d
             best = r
-
     if best:
         return best.x0 + SIGNATURE_X_OFFSET_PT, best.y1, max(line_height, best.height)
 
-    bbox_width = x1 - x0
-    return x0 + bbox_width * 0.3, y1, line_height
+    # 5. Пропорциональный сдвиг
+    return x0 + (x1 - x0) * 0.3, y1, line_height
 
 
 def _split_rgba_png(img: Image.Image) -> tuple[bytes, bytes | None]:
