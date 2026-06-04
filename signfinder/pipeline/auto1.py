@@ -215,6 +215,38 @@ def run_step3(
     }, None
 
 
+def _build_other_side_names(our_side: dict) -> list[str]:
+    """Собрать список имён другой стороны из all_parties для промпта step4.
+
+    Используется как запрещённые токены в промпте генерации паттернов —
+    предотвращает генерацию паттернов вида «ООО Инлайн[\s\S]{0,50}_{3,}».
+    """
+    our_entity = (our_side.get("legal_entity") or "").strip().lower()
+    our_roles = {r.strip().lower() for r in (our_side.get("roles") or []) if r}
+    our_signer = (our_side.get("signer") or "").strip().lower()
+
+    other_names: list[str] = []
+    seen: set[str] = set()
+
+    for p in (our_side.get("all_parties") or []):
+        if not isinstance(p, dict):
+            continue
+        le = (p.get("legal_entity") or "").strip()
+        role = (p.get("role") or "").strip()
+        signer_p = (p.get("signer") or "").strip()
+        # Пропускаем нашу сторону
+        if le and le.lower() == our_entity:
+            continue
+        if role and role.lower() in our_roles:
+            continue
+        for val in [le, role, signer_p]:
+            if val and val.lower() not in seen:
+                seen.add(val.lower())
+                other_names.append(val)
+
+    return other_names
+
+
 def run_step4(
     doc: ParsedDocument,
     lang: str,
@@ -231,6 +263,7 @@ def run_step4(
     """
     markers_block = get_markers_for_language(storage, lang)
     fragments = _get_strategic_fragments(doc, markers_block)
+    other_side_names = _build_other_side_names(our_side)
     prompt = format_generate_regex(
         legal_entity=our_side["legal_entity"],
         roles=our_side["roles"],
@@ -238,6 +271,7 @@ def run_step4(
         language=lang,
         markers_block=markers_block,
         strategic_fragments=fragments,
+        other_side_names=other_side_names or None,
     )
     result = _call_llm_json(llm, prompt, max_tokens=3000, debug=debug, capture_key="step4")
     if result is None:
@@ -360,6 +394,33 @@ def run_pipeline_auto_1(
     patterns, err = run_step4(doc, language, our_side, storage, llm, debug)
     if err or patterns is None:
         return PipelineResult(ok=False, error=err, our_side=our_side, debug=debug)
+
+    # Постфильтр: убираем паттерны, литеральный префикс которых содержит
+    # имена другой стороны — LLM иногда нарушает правило «не использовать
+    # имена чужой стороны» даже когда это явно указано в промпте.
+    other_names = _build_other_side_names(our_side)
+    if other_names:
+        other_tokens_lc = [t.lower() for t in other_names if len(t) >= 3]
+        filtered_patterns = []
+        for pat in patterns:
+            # Извлекаем литеральный префикс паттерна (до первого спецсимвола)
+            prefix = ""
+            for ch in pat:
+                if ch in frozenset(r'[]()\\.+*?{}^$|'):
+                    break
+                prefix += ch
+            prefix_lc = prefix.lower()
+            if any(tok in prefix_lc for tok in other_tokens_lc):
+                sys.stderr.write(f"[auto1] filtered other-side pattern: {pat!r}\n")
+            else:
+                filtered_patterns.append(pat)
+        if filtered_patterns:
+            patterns = filtered_patterns
+        else:
+            # Все паттерны отфильтрованы — возможно LLM перепутал стороны,
+            # оставляем оригинальные и надеемся на other_aliases в find_signatures
+            sys.stderr.write("[auto1] WARNING: all step4 patterns filtered as other-side, keeping originals\n")
+        debug["patterns_filtered_other_side"] = len(patterns) - len(filtered_patterns or [])
 
     # Структурные паттерны подписи — детерминированные, из markers-конфига.
     # Не зависят от LLM, работают на любом провайдере.

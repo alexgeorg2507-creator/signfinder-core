@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json as _json
-from typing import Optional
+from typing import Optional  # noqa: F401 — используется в format_generate_regex
 
 
 _PROMPT_GENERATE_REGEX = """Ты — инженер по регулярным выражениям. Создай regex-паттерны для поиска мест подписи.
@@ -19,11 +19,16 @@ _PROMPT_GENERATE_REGEX = """Ты — инженер по регулярным в
 Стратегические фрагменты документа:
 {strategic_fragments}
 
+Имена ДРУГОЙ стороны (запрещены в паттернах):
+{other_side_names}
+
 Правила:
 1. Паттерны должны ловить СТРУКТУРУ "синоним стороны + маркер места подписи", НЕ конкретные ФИО
 2. Используй ВСЕ типы синонимов (роли, юрлицо, подписант — каждый отдельно)
 3. Используй маркеры из переданного списка
-4. НЕ создавай паттерны совпадающие со второй стороной
+4. ЗАПРЕЩЕНО использовать в паттернах любые слова из раздела "Имена ДРУГОЙ стороны"
+   Пример нарушения: «ООО «Инлайн»[\\s\\S]{0,50}_{3,}» — содержит имя другой стороны
+   Пример нарушения: «Заказчик[\\s\\S]{0,50}_{3,}» — если мы Исполнитель, не Заказчик
 5. Приоритетные зоны: футер страниц, конец разделов, конец договора, приложения
 6. Если в фрагментах виден явный паттерн (например "{role} _____") — обязательно включи
 
@@ -48,12 +53,20 @@ def format_generate_regex(
     language: str,
     markers_block: dict,
     strategic_fragments: str,
+    other_side_names: Optional[list] = None,
 ) -> str:
     """Сформировать промпт генерации regex.
 
     Используем str.replace, а не .format() — в промпте присутствуют {} в
     примерах regex, которые format() сломает.
+
+    other_side_names — список имён/ролей другой стороны (юрлицо, роли, подписант).
+    Передаётся в промпт как ЗАПРЕЩЁННЫЕ токены для паттернов.
     """
+    if other_side_names:
+        other_block = ", ".join(other_side_names)
+    else:
+        other_block = "(не определено — будьте осторожны)"
     substitutions = {
         "{legal_entity}": legal_entity or "(не определено)",
         "{roles}": ", ".join(roles) if roles else "(не определено)",
@@ -62,6 +75,7 @@ def format_generate_regex(
         "{underline_patterns}": ", ".join(markers_block.get("underline_patterns", [])),
         "{marker_words}": ", ".join(markers_block.get("marker_words", [])),
         "{strategic_fragments}": strategic_fragments,
+        "{other_side_names}": other_block,
     }
     result = _PROMPT_GENERATE_REGEX
     for placeholder, value in substitutions.items():
