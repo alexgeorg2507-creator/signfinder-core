@@ -247,6 +247,59 @@ def _build_other_side_names(our_side: dict) -> list[str]:
     return other_names
 
 
+def _extract_surnames(storage: StorageBackend, language: str, our_side: dict) -> list[str]:
+    """Собрать фамилии НАШЕГО подписанта из signer_profile и our_side.
+
+    Фамилия = первое слово с заглавной буквы (≥3 симв). Из конфига алиасы
+    идут как 'Лебедев, Лебедев А, ...' → split → 'Лебедев'.
+    """
+    surnames: list[str] = []
+    seen: set[str] = set()
+
+    def _add(word: str) -> None:
+        w = word.strip().strip(".,/()«»\"'")
+        if len(w) >= 3 and w[0].isupper() and w.lower() not in seen:
+            seen.add(w.lower())
+            surnames.append(w)
+
+    # 1. Из конфига signer_profile (надёжнее — без ролей-префиксов)
+    try:
+        aliases = get_aliases_for_language(storage, language)
+        for alias in aliases.get("signer", []):
+            for tok in alias.replace(",", " ").split():
+                _add(tok)
+                break  # первое слово алиаса = фамилия
+    except Exception as e:
+        sys.stderr.write(f"[auto1] _extract_surnames aliases: {e}\n")
+
+    # 2. Из our_side.signer (синоним в документе) — слова с заглавной без точек-инициалов
+    signer_doc = (our_side.get("signer") or "")
+    _role_words = {"генеральный", "директор", "руководитель", "представитель",
+                   "управляющий", "президент", "главный", "заместитель"}
+    for tok in signer_doc.split():
+        tl = tok.strip(".,/()").lower()
+        if tl in _role_words or "." in tok:
+            continue
+        _add(tok)
+
+    return surnames
+
+
+def _signer_underscore_patterns(storage: StorageBackend, language: str, our_side: dict) -> list[str]:
+    """Детерминированные паттерны '_{3,} Фамилия' по фамилии подписанта.
+
+    Заякорены на ПОДЧЁРКИВАНИИ (начинаются с '_') → подпись садится на линию
+    подчёркивания рядом с нашим подписантом, а не на строку с именем компании.
+    Корректно выбирают нужный столбец в двухколоночном блоке подписей.
+    """
+    patterns: list[str] = []
+    for surname in _extract_surnames(storage, language, our_side):
+        esc = re.escape(surname)
+        # '____ Лебедев', '____ (Лебедев', '____/Лебедев'
+        patterns.append(rf"_{{3,}}[\s(/]*{esc}")
+    return patterns
+
+
 def run_step4(
     doc: ParsedDocument,
     lang: str,
@@ -395,44 +448,44 @@ def run_pipeline_auto_1(
     if err or patterns is None:
         return PipelineResult(ok=False, error=err, our_side=our_side, debug=debug)
 
-    # Постфильтр: убираем паттерны, литеральный префикс которых содержит
-    # имена другой стороны — LLM иногда нарушает правило «не использовать
-    # имена чужой стороны» даже когда это явно указано в промпте.
-    other_names = _build_other_side_names(our_side)
-    if other_names:
-        other_tokens_lc = [t.lower() for t in other_names if len(t) >= 3]
-        filtered_patterns = []
-        for pat in patterns:
-            # Извлекаем литеральный префикс паттерна (до первого спецсимвола)
-            prefix = ""
-            for ch in pat:
-                if ch in frozenset(r'[]()\\.+*?{}^$|'):
-                    break
-                prefix += ch
-            prefix_lc = prefix.lower()
-            if any(tok in prefix_lc for tok in other_tokens_lc):
-                sys.stderr.write(f"[auto1] filtered other-side pattern: {pat!r}\n")
-            else:
-                filtered_patterns.append(pat)
-        if filtered_patterns:
-            patterns = filtered_patterns
-        else:
-            # Все паттерны отфильтрованы — возможно LLM перепутал стороны,
-            # оставляем оригинальные и надеемся на other_aliases в find_signatures
-            sys.stderr.write("[auto1] WARNING: all step4 patterns filtered as other-side, keeping originals\n")
-        debug["patterns_filtered_other_side"] = len(patterns) - len(filtered_patterns or [])
+    # ── Сборка итогового пула паттернов ──────────────────────────────────────
+    # Приоритет: детерминированные паттерны по фамилии подписанта (заякорены на
+    # подчёркивании) → корректная позиция подписи в двухколоночном блоке.
+    signer_pats = _signer_underscore_patterns(storage, language, our_side)
+    debug["signer_underscore_patterns"] = signer_pats
 
-    # Структурные паттерны подписи — детерминированные, из markers-конфига.
-    # Не зависят от LLM, работают на любом провайдере.
+    # Кросс-строчные LLM-паттерны вида 'Компания[\s\S]{0,50}_{3,}' садятся на
+    # строку-префикс (имя компании), а не на подчёркивание ниже — это причина
+    # сдвига подписи. Отбрасываем их, оставляя одно-строчные.
+    def _is_crossline(p: str) -> bool:
+        return "\\s\\S" in p or "\\S\\s" in p
+
+    safe_llm = [p for p in patterns if not _is_crossline(p)]
+    dropped = len(patterns) - len(safe_llm)
+    if dropped:
+        sys.stderr.write(f"[auto1] dropped {dropped} cross-line LLM pattern(s)\n")
+    debug["patterns_crossline_dropped"] = dropped
+
+    # Структурные паттерны из markers (name-independent, '_{3,} (...)')
     markers_block = get_markers_for_language(storage, language)
-    structural = markers_block.get("signature_block_patterns", [])
-    for sp in structural:
+    structural = []
+    for sp in markers_block.get("signature_block_patterns", []):
         try:
             re.compile(sp, re.IGNORECASE | re.UNICODE)
-            if sp not in patterns:
-                patterns.append(sp)
+            structural.append(sp)
         except re.error:
             sys.stderr.write(f"[auto1] bad structural pattern '{sp}'\n")
+
+    final_patterns: list[str] = []
+    for p in signer_pats + safe_llm + structural:
+        if p and p not in final_patterns:
+            final_patterns.append(p)
+
+    if final_patterns:
+        patterns = final_patterns
+    else:
+        sys.stderr.write("[auto1] WARNING: no safe patterns, keeping originals\n")
+    debug["final_patterns"] = patterns
 
     # Step 5 — только find_signatures, без валидатора
     matches = run_step5(doc, our_side, patterns)
