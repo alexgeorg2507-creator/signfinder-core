@@ -450,21 +450,32 @@ def run_pipeline_auto_1(
 
     # ── Сборка итогового пула паттернов ──────────────────────────────────────
     # Приоритет: детерминированные паттерны по фамилии подписанта (заякорены на
-    # подчёркивании) → корректная позиция подписи в двухколоночном блоке.
+    # подчёркивании) → корректная позиция подписи в блоке '____ Фамилия'.
     signer_pats = _signer_underscore_patterns(storage, language, our_side)
     debug["signer_underscore_patterns"] = signer_pats
 
-    # Кросс-строчные LLM-паттерны вида 'Компания[\s\S]{0,50}_{3,}' садятся на
-    # строку-префикс (имя компании), а не на подчёркивание ниже — это причина
-    # сдвига подписи. Отбрасываем их, оставляя одно-строчные.
-    def _is_crossline(p: str) -> bool:
-        return "\\s\\S" in p or "\\S\\s" in p
+    # Нормализация кросс-строчных LLM-паттернов: '[\s\S]' (любой символ, включая
+    # перенос строки) → '[^\S\n]' (горизонтальный пробел, без переноса).
+    # Зачем: паттерн 'Роль[\s\S]{0,50}_{3,}' нужен для подвалов вида
+    # 'Клиент ________' (роль и подчёркивание на ОДНОЙ строке) — он ставит подпись
+    # корректно (после роли). Но тот же '[\s\S]' в двухколоночном блоке
+    # 'Компания\n____ ФИО' тянется через перенос и садится на строку компании.
+    # Запрет переноса убирает второй (плохой) случай, сохраняя первый (нужный).
+    def _normalize_sameline(p: str) -> str:
+        return p.replace("[\\s\\S]", "[^\\S\\n]").replace("[\\S\\s]", "[^\\S\\n]")
 
-    safe_llm = [p for p in patterns if not _is_crossline(p)]
-    dropped = len(patterns) - len(safe_llm)
-    if dropped:
-        sys.stderr.write(f"[auto1] dropped {dropped} cross-line LLM pattern(s)\n")
-    debug["patterns_crossline_dropped"] = dropped
+    normalized_llm: list[str] = []
+    norm_count = 0
+    for p in patterns:
+        np = _normalize_sameline(p)
+        if np != p:
+            norm_count += 1
+        try:
+            re.compile(np, re.IGNORECASE | re.UNICODE)
+            normalized_llm.append(np)
+        except re.error:
+            sys.stderr.write(f"[auto1] bad normalized pattern '{np}'\n")
+    debug["patterns_crossline_normalized"] = norm_count
 
     # Структурные паттерны из markers (name-independent, '_{3,} (...)')
     markers_block = get_markers_for_language(storage, language)
@@ -477,7 +488,7 @@ def run_pipeline_auto_1(
             sys.stderr.write(f"[auto1] bad structural pattern '{sp}'\n")
 
     final_patterns: list[str] = []
-    for p in signer_pats + safe_llm + structural:
+    for p in signer_pats + normalized_llm + structural:
         if p and p not in final_patterns:
             final_patterns.append(p)
 
