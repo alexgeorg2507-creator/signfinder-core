@@ -482,9 +482,12 @@ def apply_template_anchors(doc, template) -> list[SignMatch]:
                             id=f"tpl_{counter:03d}",
                             page=fallback_page_idx,
                             bbox=tuple(bbox),
-                            context=(anchor.anchor_text or "")[:80],
+                            # Сохраняем оригинальный паттерн — он нужен _find_underscore_anchor
+                            # для определения стороны (начало с '_' → x0+offset).
+                            # Флаг bbox_fallback кладём в context, а не в pattern.
+                            context=f"[bbox_fallback] {(anchor.anchor_text or '')[:80]}",
                             party=getattr(template, "name", "template"),
-                            pattern=f"[bbox_fallback] {pattern_str or ''}",
+                            pattern=pattern_str or "",
                         ))
                         sys.stderr.write(
                             f"[finder] bbox-fallback added_by={getattr(anchor,'added_by','?')} "

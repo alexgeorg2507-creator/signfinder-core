@@ -25,16 +25,19 @@ MARKERS_DEFAULTS: dict = {
             "underline_patterns": ["_{3,}", "\\.{5,}"],
             "marker_words": ["Подпись", "М.П.", "Место подписи", "Подп.", "/Подпись/"],
             "section_anchors": ["раздел", "приложение", "акт", "часть"],
+            "signature_block_patterns": ["_{3,}\\s*\\([^)]{3,40}\\)"],
         },
         "en": {
             "underline_patterns": ["_{3,}", "\\.{5,}"],
             "marker_words": ["Signature", "Sign", "/Signature/", "Authorized Signatory"],
             "section_anchors": ["section", "annex", "appendix", "schedule"],
+            "signature_block_patterns": ["_{3,}\\s*\\([^)]{3,40}\\)"],
         },
         "pl": {
             "underline_patterns": ["_{3,}", "\\.{5,}"],
             "marker_words": ["Podpis", "Czytelny podpis", "Pieczęć"],
             "section_anchors": ["część", "załącznik", "rozdział"],
+            "signature_block_patterns": ["_{3,}\\s*\\([^)]{3,40}\\)"],
         },
     },
 }

@@ -18,6 +18,8 @@ class DocumentTemplate:
     anchors: list                    # list[dict] — сериализованные TextAnchor
     synonyms_used: dict              # legal_entity, roles, signer
 
+    signature_scale: float = 1.0    # масштаб подписи (1.0 = 42pt); default для обратной совместимости
+
     usage_stats: dict = field(default_factory=lambda: {
         "times_applied": 0,
         "times_confirmed": 0,

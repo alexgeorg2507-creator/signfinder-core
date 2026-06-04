@@ -50,25 +50,6 @@ class PipelineResult:
     debug: dict = field(default_factory=dict)        # prompt_step3/raw_step3/step4 и т.п.
 
 
-# ── Синтетический паттерн для подписи в блоке реквизитов ─────────────────────
-
-def _signer_initials_pattern(signer: str) -> str | None:
-    """Генерирует паттерн для '_____ (Фамилия И.О.)' по полному ФИО.
-
-    'Лебедев Алексей Петрович'  → r'_{3,}[\\s]{0,10}\\(Лебедев А\\.П\\.\\)'
-    'Иванов Иван'               → r'_{3,}[\\s]{0,10}\\(Иванов И\\.\\)'
-    Менее 2 слов → None.
-    """
-    parts = signer.strip().split()
-    if len(parts) < 2:
-        return None
-    surname = re.escape(parts[0])
-    initials = re.escape("".join(p[0] + "." for p in parts[1:] if p))
-    if not initials:
-        return None
-    return rf"_{{3,}}[\s]{{0,10}}\({surname}\s*{initials}\)"
-
-
 # ── Токенизатор алиасов (точная копия из исходника) ───────────────────────────
 
 def _extract_distinctive_tokens(s: str) -> list:
@@ -380,17 +361,17 @@ def run_pipeline_auto_1(
     if err or patterns is None:
         return PipelineResult(ok=False, error=err, our_side=our_side, debug=debug)
 
-    # Синтетический паттерн для "________________ (Фамилия И.О.)" —
-    # не зависит от LLM, гарантирует обнаружение подписи в блоке реквизитов.
-    _synth = _signer_initials_pattern(our_side.get("signer", ""))
-    if _synth:
+    # Структурные паттерны подписи — детерминированные, из markers-конфига.
+    # Не зависят от LLM, работают на любом провайдере.
+    markers_block = get_markers_for_language(storage, language)
+    structural = markers_block.get("signature_block_patterns", [])
+    for sp in structural:
         try:
-            re.compile(_synth, re.IGNORECASE | re.UNICODE)
-            if _synth not in patterns:
-                patterns.append(_synth)
-                sys.stderr.write(f"[auto1] synthetic signer pattern added: {_synth}\n")
+            re.compile(sp, re.IGNORECASE | re.UNICODE)
+            if sp not in patterns:
+                patterns.append(sp)
         except re.error:
-            pass
+            sys.stderr.write(f"[auto1] bad structural pattern '{sp}'\n")
 
     # Step 5 — только find_signatures, без валидатора
     matches = run_step5(doc, our_side, patterns)
@@ -466,6 +447,7 @@ def save_pipeline_template(
     anchors: list,
     storage: StorageBackend,
     template_name: Optional[str] = None,
+    signature_scale: float = 1.0,
 ) -> str:
     """Создать и сохранить DocumentTemplate после pipeline.
 
@@ -509,5 +491,6 @@ def save_pipeline_template(
     )
     if template_name:
         tpl.name = template_name
+    tpl.signature_scale = signature_scale
 
     return save_template(storage, tpl)

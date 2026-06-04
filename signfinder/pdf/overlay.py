@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import re
 
 try:
     import fitz
@@ -126,8 +127,10 @@ def _find_underscore_anchor(page, bbox, pattern: str):
     line_height = y1 - y0
     y_center = (y0 + y1) / 2
 
-    # 1. Паттерн сам начинается с подчёркивания
-    if pattern.startswith("_"):
+    # 1. Паттерн сам начинается с подчёркивания (с учётом non-capturing group обёртки).
+    # LLM может генерировать (?:_{3,}...) — убираем (?:...) перед проверкой.
+    _pat_norm = re.sub(r'^\(\?:', '', pattern)
+    if _pat_norm.startswith("_"):
         return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
 
     # 2. Текстовый префикс роли (напр. "Заказчик") — самый надёжный метод:
@@ -174,7 +177,12 @@ def _find_underscore_anchor(page, bbox, pattern: str):
     if best:
         return best.x0 + SIGNATURE_X_OFFSET_PT, best.y1, max(line_height, best.height)
 
-    # 5. Пропорциональный сдвиг
+    # 5. Последний резерв.
+    # Если паттерн начинается с '_' — подчёркивание графическое, но x0 bbox корректен.
+    # Используем x0 + offset, а не пропорцию (которая смещала бы вправо на ~40pt).
+    if _pat_norm.startswith("_"):
+        return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
+    # Иначе — паттерн вида "Роль____", x0 = текстовый блок, сдвигаем к хвосту.
     return x0 + (x1 - x0) * 0.3, y1, line_height
 
 
