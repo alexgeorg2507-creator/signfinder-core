@@ -142,6 +142,9 @@ class ImapSource:
 
         src = source_folder or self._folder_in
 
+        # Гарантировать что папка-назначение существует
+        self._ensure_folder(dest_folder)
+
         # SELECT source — ОБЯЗАТЕЛЬНО проверять результат, иначе COPY/MOVE падает в AUTH
         typ, _ = self._imap.select(self._quote(src))
         if typ != "OK":
@@ -176,17 +179,18 @@ class ImapSource:
         self._connect()
         assert self._imap is not None
 
+        self._ensure_folder(folder)   # создать папку если нет
+
         date_time = imaplib.Time2Internaldate(time.time())
-        typ, _ = self._imap.append(
+        typ, data = self._imap.append(
             self._quote(folder),
             "\\Seen",
             date_time,
             raw_email,
         )
         if typ != "OK":
-            logger.error("IMAP APPEND to %s failed: %s", folder, typ)
-        else:
-            logger.debug("APPEND to %s OK (%d bytes)", folder, len(raw_email))
+            raise RuntimeError(f"IMAP APPEND to {folder} failed: {typ} {data}")
+        logger.debug("APPEND to %s OK (%d bytes)", folder, len(raw_email))
 
     def fetch_raw(self, uid: str, source_folder: str | None = None) -> bytes:
         """Возвращает сырые байты письма по UID."""
@@ -204,6 +208,23 @@ class ImapSource:
         return raw
 
     # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _ensure_folder(self, folder: str) -> None:
+        """Создаёт IMAP-папку/ярлык если не существует. Идемпотентно."""
+        assert self._imap is not None
+        quoted = self._quote(folder)
+        # Проверка существования через SELECT
+        typ, _ = self._imap.select(quoted)
+        if typ == "OK":
+            return  # уже есть
+        # Создаём
+        typ, data = self._imap.create(quoted)
+        if typ != "OK":
+            # Gmail может вернуть NO если ярлык уже есть в другом регистре —
+            # это не критично, логируем
+            logger.warning("IMAP CREATE %s: %s %s", folder, typ, data)
+        else:
+            logger.info("IMAP CREATE %s OK", folder)
 
     def _fetch_and_parse(self, uid: str) -> Optional[IntakeMessage]:
         assert self._imap is not None
