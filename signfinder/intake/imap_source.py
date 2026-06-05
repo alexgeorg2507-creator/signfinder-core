@@ -141,22 +141,32 @@ class ImapSource:
         assert self._imap is not None
 
         src = source_folder or self._folder_in
-        self._imap.select(self._quote(src))
 
-        # Попытка UID MOVE (RFC 6851)
+        # SELECT source — ОБЯЗАТЕЛЬНО проверять результат, иначе COPY/MOVE падает в AUTH
+        typ, _ = self._imap.select(self._quote(src))
+        if typ != "OK":
+            raise RuntimeError(f"IMAP SELECT {src} failed: {typ}")
+
+        # Попытка UID MOVE (RFC 6851, Gmail поддерживает)
         try:
             typ, _ = self._imap.uid("move", uid, self._quote(dest_folder))
             if typ == "OK":
                 logger.debug("UID MOVE %s → %s OK", uid, dest_folder)
                 return
         except Exception as e:
-            logger.debug("UID MOVE not supported (%s), fallback to COPY+DELETE", e)
+            logger.debug("UID MOVE failed (%s), fallback COPY+DELETE", e)
+            # После исключения соединение могло сброситься в AUTH —
+            # переподключиться и заново SELECT перед COPY
+            self._imap = None
+            self._connect()
+            typ, _ = self._imap.select(self._quote(src))
+            if typ != "OK":
+                raise RuntimeError(f"IMAP re-SELECT {src} failed: {typ}")
 
         # Fallback: COPY + DELETE + EXPUNGE
         typ, _ = self._imap.uid("copy", uid, self._quote(dest_folder))
         if typ != "OK":
-            logger.error("UID COPY %s → %s failed", uid, dest_folder)
-            return
+            raise RuntimeError(f"IMAP COPY {uid} → {dest_folder} failed: {typ}")
         self._imap.uid("store", uid, "+FLAGS", "\\Deleted")
         self._imap.expunge()
         logger.debug("COPY+DELETE %s → %s done", uid, dest_folder)
@@ -184,7 +194,9 @@ class ImapSource:
         assert self._imap is not None
 
         src = source_folder or self._folder_in
-        self._imap.select(self._quote(src))
+        typ, _ = self._imap.select(self._quote(src))
+        if typ != "OK":
+            raise RuntimeError(f"IMAP SELECT {src} failed in fetch_raw: {typ}")
         typ, data = self._imap.uid("fetch", uid, "(RFC822)")
         if typ != "OK" or not data or not data[0]:
             raise RuntimeError(f"FETCH {uid} failed: {typ}")
