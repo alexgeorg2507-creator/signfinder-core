@@ -128,6 +128,11 @@ class ImapSource:
             except Exception as e:
                 logger.error("Failed to fetch uid=%s: %s", uid, e)
 
+        # Закрыть соединение после чтения — FETCH больших писем оставляет
+        # рассинхрон в буфере, который ломает последующие SELECT (Gmail).
+        # append/move получат свежее соединение через _connect().
+        self.close()
+
         return messages
 
     def move(
@@ -210,21 +215,21 @@ class ImapSource:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _ensure_folder(self, folder: str) -> None:
-        """Создаёт IMAP-папку/ярлык если не существует. Идемпотентно."""
+        """Создаёт IMAP-папку/ярлык если не существует. Идемпотентно.
+        БЕЗ SELECT — SELECT на Gmail даёт многословный ответ и ломает парсер imaplib.
+        """
         assert self._imap is not None
         quoted = self._quote(folder)
-        # Проверка существования через SELECT
-        typ, _ = self._imap.select(quoted)
-        if typ == "OK":
-            return  # уже есть
-        # Создаём
-        typ, data = self._imap.create(quoted)
-        if typ != "OK":
-            # Gmail может вернуть NO если ярлык уже есть в другом регистре —
-            # это не критично, логируем
-            logger.warning("IMAP CREATE %s: %s %s", folder, typ, data)
-        else:
-            logger.info("IMAP CREATE %s OK", folder)
+        try:
+            typ, data = self._imap.create(quoted)
+            if typ == "OK":
+                logger.info("IMAP CREATE %s OK", folder)
+            else:
+                # NO = папка/ярлык уже существует — это норма, не ошибка
+                logger.debug("IMAP CREATE %s: %s (вероятно уже есть)", folder, typ)
+        except Exception as e:
+            # CREATE существующей папки может кинуть — не критично
+            logger.debug("IMAP CREATE %s exception: %s (вероятно уже есть)", folder, e)
 
     def _fetch_and_parse(self, uid: str) -> Optional[IntakeMessage]:
         assert self._imap is not None
