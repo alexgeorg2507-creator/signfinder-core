@@ -27,12 +27,29 @@ class SmtpSink:
         user: str,
         password: str,
         from_addr: str | None = None,
+        auth_method: str = "basic",
+        oauth2_provider: str = "",
+        oauth2_client_id: str = "",
+        oauth2_client_secret: str = "",
+        oauth2_refresh_token: str = "",
+        oauth2_token_endpoint: str = "",
     ) -> None:
         self._host = host
         self._port = port
         self._user = user
         self._password = password
         self._from = from_addr or user
+        self._auth_method = auth_method
+        self._oauth = None
+        if auth_method == "xoauth2":
+            from signfinder.intake.oauth2 import OAuth2TokenProvider
+            self._oauth = OAuth2TokenProvider(
+                provider=oauth2_provider,
+                client_id=oauth2_client_id,
+                client_secret=oauth2_client_secret,
+                refresh_token=oauth2_refresh_token,
+                token_endpoint=oauth2_token_endpoint,
+            )
 
     def deliver(
         self,
@@ -59,7 +76,14 @@ class SmtpSink:
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
                 smtp.starttls()
-                if self._user and self._password:
+                if self._auth_method == "xoauth2" and self._oauth is not None:
+                    import base64
+                    from signfinder.intake.oauth2 import build_xoauth2_string
+                    token = self._oauth.get_access_token()
+                    auth_bytes = build_xoauth2_string(self._user, token)
+                    smtp.auth("XOAUTH2", lambda challenge=None: auth_bytes)
+                    logger.info("SMTP XOAUTH2 logged in as %s (%s)", self._user, self._oauth._provider)
+                elif self._user and self._password:
                     smtp.login(self._user, self._password)
                 smtp.send_message(msg)
             logger.info("SMTP delivered to %s subject=%r", to_addr, subject)

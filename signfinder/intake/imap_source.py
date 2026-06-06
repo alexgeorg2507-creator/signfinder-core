@@ -60,6 +60,12 @@ class ImapSource:
         password: str,
         ssl: bool,
         folder_in: str,
+        auth_method: str = "basic",
+        oauth2_provider: str = "",
+        oauth2_client_id: str = "",
+        oauth2_client_secret: str = "",
+        oauth2_refresh_token: str = "",
+        oauth2_token_endpoint: str = "",
     ) -> None:
         self._host = host
         self._port = port
@@ -68,6 +74,17 @@ class ImapSource:
         self._ssl = ssl
         self._folder_in = folder_in
         self._imap: imaplib.IMAP4 | None = None
+        self._auth_method = auth_method
+        self._oauth = None
+        if auth_method == "xoauth2":
+            from signfinder.intake.oauth2 import OAuth2TokenProvider
+            self._oauth = OAuth2TokenProvider(
+                provider=oauth2_provider,
+                client_id=oauth2_client_id,
+                client_secret=oauth2_client_secret,
+                refresh_token=oauth2_refresh_token,
+                token_endpoint=oauth2_token_endpoint,
+            )
 
     # ── Connection ────────────────────────────────────────────────────────────
 
@@ -84,8 +101,18 @@ class ImapSource:
             self._imap = imaplib.IMAP4_SSL(self._host, self._port)
         else:
             self._imap = imaplib.IMAP4(self._host, self._port)
-        self._imap.login(self._user, self._password)
-        logger.info("IMAP logged in as %s", self._user)
+
+        if self._auth_method == "xoauth2" and self._oauth is not None:
+            from signfinder.intake.oauth2 import build_xoauth2_string
+            token = self._oauth.get_access_token()
+            auth_bytes = build_xoauth2_string(self._user, token)
+            typ, _ = self._imap.authenticate("XOAUTH2", lambda _: auth_bytes)
+            if typ != "OK":
+                raise RuntimeError(f"IMAP XOAUTH2 auth failed: {typ}")
+            logger.info("IMAP XOAUTH2 logged in as %s (%s)", self._user, self._oauth._provider)
+        else:
+            self._imap.login(self._user, self._password)
+            logger.info("IMAP logged in as %s (basic)", self._user)
 
     def close(self) -> None:
         if self._imap:
