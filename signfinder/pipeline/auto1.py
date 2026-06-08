@@ -302,6 +302,75 @@ def _signer_underscore_patterns(storage: StorageBackend, language: str, our_side
     return patterns
 
 
+def _extract_contract_type(doc: ParsedDocument, language: str) -> str:
+    """Детерминированное извлечение типа договора из заголовка первой страницы."""
+    import re as _re
+    text = ""
+    if doc.pages:
+        text = (doc.pages[0].text or "")[:800]
+
+    if language == "ru":
+        m = _re.search(
+            r"ДОГОВОР\s+((?:[А-ЯЁА-яёa-z][А-ЯЁА-яёa-z\-]*\s+){0,3}[А-ЯЁА-яёa-z][А-ЯЁА-яёa-z\-]*)",
+            text,
+            _re.IGNORECASE,
+        )
+        if m:
+            raw = m.group(1).strip()
+            raw = _re.sub(r"\s*[№NnNnNn]?\s*\d.*$", "", raw).strip()
+            raw = _re.sub(r"\s*(от|г\.|года).*$", "", raw, flags=_re.IGNORECASE).strip()
+            if 2 <= len(raw.split()) <= 5:
+                return "Договор " + raw.lower()
+        return "Договор"
+
+    elif language == "en":
+        m = _re.search(
+            r"(SERVICE\s+AGREEMENT|SUPPLY\s+AGREEMENT|LEASE\s+AGREEMENT|"
+            r"CONTRACT\s+FOR\s+[A-Z][A-Za-z\s]{2,25}|AGREEMENT\s+(?:FOR|ON|OF)\s+[A-Z][A-Za-z\s]{2,25})",
+            text, _re.IGNORECASE,
+        )
+        if m:
+            return m.group(0).strip()[:50].title()
+        return "Contract"
+
+    elif language == "pl":
+        m = _re.search(
+            r"(UMOWA\s+(?:[A-ZŁĄĆĘÓŚŻŹ][A-ZŁĄĆĘÓŚŻŹa-złąćęóśżź\-]*\s+){0,3}"
+            r"[A-ZŁĄĆĘÓŚŻŹ][A-ZŁĄĆĘÓŚŻŹa-złąćęóśżź\-]*)",
+            text, _re.IGNORECASE,
+        )
+        if m:
+            raw = m.group(1).strip()
+            raw = _re.sub(r"\s*[nrNR]?\s*\d.*$", "", raw).strip()
+            if 1 <= len(raw.split()) <= 5:
+                return raw.capitalize()
+        return "Umowa"
+
+    return "Договор"
+
+
+def _extract_counterparty(our_side: dict) -> str:
+    """Извлечь название контрагента (другой стороны) из all_parties."""
+    our_entity = (our_side.get("legal_entity") or "").strip().lower()
+    our_roles = {r.strip().lower() for r in (our_side.get("roles") or []) if r}
+
+    for p in (our_side.get("all_parties") or []):
+        if not isinstance(p, dict):
+            continue
+        le = (p.get("legal_entity") or "").strip()
+        role = (p.get("role") or "").strip()
+        if le and le.lower() == our_entity:
+            continue
+        if role and role.lower() in our_roles:
+            continue
+        if le:
+            return le
+        if role:
+            return role
+
+    return ""
+
+
 def run_step4(
     doc: ParsedDocument,
     lang: str,
@@ -604,10 +673,15 @@ def save_pipeline_template(
     finally:
         fitz_doc.close()
 
+    contract_type = _extract_contract_type(doc, language)
+    counterparty = _extract_counterparty(our_side)
+
     synonyms_used = {
         "legal_entity": our_side.get("legal_entity", ""),
         "roles": our_side.get("roles", []),
         "signer": our_side.get("signer", ""),
+        "contract_type": contract_type,
+        "counterparty": counterparty,
     }
 
     tpl = new_template(

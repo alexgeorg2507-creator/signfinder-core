@@ -110,15 +110,29 @@ def delete_template(storage: StorageBackend, template_id: str) -> bool:
 # ── Factory ──────────────────────────────────────────────────────────────────
 
 def generate_template_name(language: str, synonyms: Optional[dict] = None) -> str:
-    """Имя по схеме: pipelineAuto1_YYYY-MM-DD_HHMM_<lang>[_<тип>]"""
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M")
-    name = f"pipelineAuto1_{ts}_{language}"
-    if synonyms:
-        doc_type = synonyms.get("doc_type") or synonyms.get("legal_entity", "")
-        if doc_type:
-            safe = str(doc_type)[:20].replace(" ", "_")
-            name = f"{name}_{safe}"
-    return name
+    """Формирует читаемое имя шаблона.
+
+    Формат: "{тип договора} с {контрагент} {lang} ({дата})"
+    Пример: "Договор аренды с ООО Ромашка ru (08.06.2026)"
+    """
+    date_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
+    synonyms = synonyms or {}
+
+    contract_type = (synonyms.get("contract_type") or "").strip()
+    counterparty = (synonyms.get("counterparty") or "").strip()
+
+    if not contract_type:
+        contract_type = (synonyms.get("doc_type") or "Договор").strip()
+
+    contract_type = contract_type[:50]
+    counterparty = counterparty[:40]
+
+    if counterparty:
+        name = f"{contract_type} с {counterparty} {language} ({date_str})"
+    else:
+        name = f"{contract_type} {language} ({date_str})"
+
+    return name[:100]
 
 
 def new_template(
