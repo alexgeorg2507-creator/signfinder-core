@@ -5,7 +5,7 @@
   2. Иначе — LLM fallback по первым ~2000 символам через переданный LLMClient.
   3. Если LLM недоступен или вернул мусор — возвращаем 'unknown'.
 
-Поддерживаемые языки: ru, en, pl. Остальные → 'unknown'.
+Поддерживаемые языки: ru, en, pl, mk. Остальные → 'unknown'.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Optional
 
 from signfinder.llm.base import LLMClient, LLMError
 
-SUPPORTED = ("ru", "en", "pl")
+SUPPORTED = ("ru", "en", "pl", "mk")
 
 
 def detect_language(doc, llm: Optional[LLMClient] = None) -> str:
@@ -55,7 +55,7 @@ def _get_sample(doc, max_chars: int) -> str:
 def _llm_detect(llm: LLMClient, sample: str) -> str:
     prompt = (
         "Определи язык фрагмента договора. Ответь ОДНИМ кодом из списка: "
-        "ru, en, pl, unknown. Никаких пояснений, только код.\n\n"
+        "ru, en, pl, mk, unknown. Никаких пояснений, только код.\n\n"
         f"Фрагмент:\n{sample}"
     )
     try:

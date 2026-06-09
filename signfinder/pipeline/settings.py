@@ -39,6 +39,15 @@ MARKERS_DEFAULTS: dict = {
             "section_anchors": ["część", "załącznik", "rozdział"],
             "signature_block_patterns": ["_{3,}\\s*\\([^)]{3,40}\\)"],
         },
+        "mk": {
+            "underline_patterns": ["_{3,}", "\\.{5,}"],
+            "marker_words": [
+                "Потпис", "УПРАВИТЕЛ", "ОВЛАСТЕНО ЛИЦЕ", "Директор",
+                "Потпишани", "М.П.", "Место за потпис",
+            ],
+            "section_anchors": ["дел", "прилог", "анекс", "додаток"],
+            "signature_block_patterns": ["_{3,}\\s*\\([^)]{3,40}\\)"],
+        },
     },
 }
 
