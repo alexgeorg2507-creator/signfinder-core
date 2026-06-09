@@ -172,6 +172,7 @@ def run_step3(
     storage: StorageBackend,
     llm: LLMClient,
     debug: dict,
+    signer_id: str = "default",
 ) -> tuple:
     """Шаг 3: определить нашу сторону в шапке договора.
 
@@ -179,7 +180,7 @@ def run_step3(
         (our_side_dict, None)  — успех
         (None, error_str)      — провал
     """
-    aliases = get_aliases_for_language(storage, lang)
+    aliases = get_aliases_for_language(storage, lang, signer_id=signer_id)
     markers_block = get_markers_for_language(storage, lang)
 
     if not aliases["signer"]:
@@ -247,7 +248,7 @@ def _build_other_side_names(our_side: dict) -> list[str]:
     return other_names
 
 
-def _extract_surnames(storage: StorageBackend, language: str, our_side: dict) -> list[str]:
+def _extract_surnames(storage: StorageBackend, language: str, our_side: dict, signer_id: str = "default") -> list[str]:
     """Собрать фамилии НАШЕГО подписанта из signer_profile и our_side.
 
     Фамилия = первое слово с заглавной буквы (≥3 симв). Из конфига алиасы
@@ -264,7 +265,7 @@ def _extract_surnames(storage: StorageBackend, language: str, our_side: dict) ->
 
     # 1. Из конфига signer_profile (надёжнее — без ролей-префиксов)
     try:
-        aliases = get_aliases_for_language(storage, language)
+        aliases = get_aliases_for_language(storage, language, signer_id=signer_id)
         for alias in aliases.get("signer", []):
             for tok in alias.replace(",", " ").split():
                 _add(tok)
@@ -285,7 +286,7 @@ def _extract_surnames(storage: StorageBackend, language: str, our_side: dict) ->
     return surnames
 
 
-def _signer_underscore_patterns(storage: StorageBackend, language: str, our_side: dict) -> list[str]:
+def _signer_underscore_patterns(storage: StorageBackend, language: str, our_side: dict, signer_id: str = "default") -> list[str]:
     """Детерминированные паттерны '_{3,} Фамилия' по фамилии подписанта.
 
     Заякорены на ПОДЧЁРКИВАНИИ (начинаются с '_') → подпись садится на линию
@@ -293,7 +294,7 @@ def _signer_underscore_patterns(storage: StorageBackend, language: str, our_side
     Корректно выбирают нужный столбец в двухколоночном блоке подписей.
     """
     patterns: list[str] = []
-    for surname in _extract_surnames(storage, language, our_side):
+    for surname in _extract_surnames(storage, language, our_side, signer_id=signer_id):
         esc = re.escape(surname)
         # Подчёркивание, затем фамилия в пределах 20 символов на ТОЙ ЖЕ строке.
         # [^\n]{0,20} пропускает разделители и инициалы перед фамилией:
@@ -491,6 +492,7 @@ def run_pipeline_auto_1(
     language: str,
     storage: StorageBackend,
     llm: LLMClient,
+    signer_id: str = "default",
 ) -> PipelineResult:
     """PipelineAuto1: step3 → step4 → step5 → TextAnchor[].
 
@@ -498,10 +500,11 @@ def run_pipeline_auto_1(
     Без Streamlit: ошибки возвращаются через PipelineResult.error.
 
     Параметры:
-        doc      — ParsedDocument (уже распарсен)
-        language — 'ru'/'en'/'pl'
-        storage  — StorageBackend (для signer_profile, markers)
-        llm      — LLMClient
+        doc       — ParsedDocument (уже распарсен)
+        language  — 'ru'/'en'/'pl'
+        storage   — StorageBackend (для signer_profile, markers)
+        llm       — LLMClient
+        signer_id — id профиля подписанта (Модель Б)
 
     Returns:
         PipelineResult с ok=True и заполненными anchors/matches,
@@ -510,7 +513,7 @@ def run_pipeline_auto_1(
     debug: dict = {}
 
     # Step 3
-    our_side, err = run_step3(doc, language, storage, llm, debug)
+    our_side, err = run_step3(doc, language, storage, llm, debug, signer_id=signer_id)
     if err or our_side is None:
         return PipelineResult(ok=False, error=err, debug=debug)
 
@@ -522,7 +525,7 @@ def run_pipeline_auto_1(
     # ── Сборка итогового пула паттернов ──────────────────────────────────────
     # Приоритет: детерминированные паттерны по фамилии подписанта (заякорены на
     # подчёркивании) → корректная позиция подписи в блоке '____ Фамилия'.
-    signer_pats = _signer_underscore_patterns(storage, language, our_side)
+    signer_pats = _signer_underscore_patterns(storage, language, our_side, signer_id=signer_id)
     debug["signer_underscore_patterns"] = signer_pats
 
     # Нормализация кросс-строчных LLM-паттернов: '[\s\S]' (любой символ, включая
@@ -617,7 +620,7 @@ def apply_template_to_doc(
         (list[SignMatch], list[TextAnchor])
         При провале — ([], [])
     """
-    from signfinder.anchors.finder import apply_template_anchors
+    from signfinder.anchors.finder import apply_template_anchors, manual_match_to_anchor
 
     try:
         matches = apply_template_anchors(doc, template)
@@ -628,7 +631,12 @@ def apply_template_to_doc(
     anchors: list[TextAnchor] = []
     for m in matches:
         try:
-            anchors.append(regex_match_to_anchor(m, m.page, language))
+            # v1.18.3: ручные якоря сохраняют провенанс manual_click — иначе при
+            # повторном сохранении шаблона они деградируют в auto и подпись «уезжает».
+            if getattr(m, "added_by", "auto_regex") == "manual_click":
+                anchors.append(manual_match_to_anchor(m, m.page))
+            else:
+                anchors.append(regex_match_to_anchor(m, m.page, language))
         except Exception as e:
             sys.stderr.write(f"[auto1] template anchor conv: {e}\n")
 

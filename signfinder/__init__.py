@@ -52,6 +52,9 @@ from signfinder.pdf import (
 from signfinder.pipeline import (
     PipelineResult,
     apply_template_to_doc,
+    detect_signer_profile,
+    list_signer_profiles,
+    load_signer_profile_by_id,
     run_pipeline_auto_1,
     save_pipeline_template,
     validate_with_llm,
@@ -71,7 +74,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.18.1"
+__version__ = "1.18.3"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -88,6 +91,7 @@ class AnalysisResult:
     error: Optional[str] = None
     pipeline_debug: dict = field(default_factory=dict)
     fingerprint: Optional[dict[str, Any]] = None
+    detected_signer_id: Optional[str] = None
 
 
 # ── SignFinder facade ─────────────────────────────────────────────────────────
@@ -163,6 +167,15 @@ class SignFinder:
         finally:
             fitz_doc.close()
 
+        # Автоопределение профиля подписанта (Модель Б): по тексту первой+последней стр.
+        doc_text_for_detect = ""
+        pages = doc.pages
+        if pages:
+            doc_text_for_detect = (pages[0].text or "")
+            if len(pages) > 1:
+                doc_text_for_detect += "\n" + (pages[-1].text or "")
+        detected_signer_id = detect_signer_profile(self.storage, doc_text_for_detect)
+
         if matcher.traffic_light == "green" and matcher.best_match:
             tpl = load_template(self.storage, matcher.best_match.template_id)
             if tpl is not None:
@@ -179,6 +192,7 @@ class SignFinder:
                         matches=tpl_matches,
                         anchors=tpl_anchors,
                         fingerprint=fp,
+                        detected_signer_id=detected_signer_id,
                     )
 
         pipeline = run_pipeline_auto_1(
@@ -186,6 +200,7 @@ class SignFinder:
             language=lang,
             storage=self.storage,
             llm=self.llm,
+            signer_id=detected_signer_id,
         )
 
         if not pipeline.ok:
@@ -195,6 +210,7 @@ class SignFinder:
                 error=pipeline.error,
                 pipeline_debug=pipeline.debug,
                 fingerprint=fp,
+                detected_signer_id=detected_signer_id,
             )
 
         return AnalysisResult(
@@ -205,6 +221,7 @@ class SignFinder:
             our_side=pipeline.our_side,
             pipeline_debug=pipeline.debug,
             fingerprint=fp,
+            detected_signer_id=detected_signer_id,
         )
 
     def sign(
@@ -271,4 +288,5 @@ __all__ = [
     "new_template", "update_usage_stats", "add_anchors_to_template", "compute_fingerprint",
     "classify", "run_pipeline_auto_1", "PipelineResult", "apply_template_to_doc",
     "save_pipeline_template", "validate_with_llm", "dedup_anchors",
+    "detect_signer_profile", "list_signer_profiles", "load_signer_profile_by_id",
 ]

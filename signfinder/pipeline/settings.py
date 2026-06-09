@@ -101,12 +101,13 @@ def save_signer_profile(storage: StorageBackend, profile: dict) -> None:
 def get_aliases_for_language(
     storage: Optional[StorageBackend],
     language: str,
+    signer_id: str = "default",
 ) -> dict[str, list[str]]:
-    """Вернуть {company: [...], signer: [...]} алиасов для языка.
+    """Вернуть {company: [...], signer: [...]} алиасов для языка КОНКРЕТНОГО профиля.
 
     Fallback: если для языка пусто — возвращает все.
     """
-    profile = load_signer_profile(storage)
+    profile = load_signer_profile_by_id(storage, signer_id)
     lang = (language or "").lower()[:2]
 
     def _filter(key: str) -> list[str]:
@@ -121,3 +122,72 @@ def get_aliases_for_language(
         "company": _filter("company_aliases"),
         "signer": _filter("signer_aliases"),
     }
+
+
+# ── Multi-signer profiles ──────────────────────────────────────────────────────
+
+_SIGNERS_PREFIX = "signers/"
+
+
+def list_signer_profiles(storage: Optional[StorageBackend]) -> list[dict]:
+    """Список всех профилей подписантов из signers/*/profile.json."""
+    if storage is None:
+        return []
+    out = []
+    try:
+        keys = storage.list_prefix(_SIGNERS_PREFIX)
+    except Exception:
+        keys = []
+    seen: set = set()
+    for k in keys:
+        parts = k[len(_SIGNERS_PREFIX):].split("/")
+        if len(parts) >= 2 and parts[1] == "profile.json":
+            sid = parts[0]
+            if sid in seen:
+                continue
+            seen.add(sid)
+            data = storage.read_json(k)
+            if data:
+                data.setdefault("id", sid)
+                out.append(data)
+    return out
+
+
+def load_signer_profile_by_id(storage: Optional[StorageBackend], signer_id: str) -> dict:
+    """Профиль по id. Fallback на legacy signer_profile.json (корень) для 'default'."""
+    if storage is not None:
+        data = storage.read_json(f"{_SIGNERS_PREFIX}{signer_id}/profile.json")
+        if data:
+            data.setdefault("id", signer_id)
+            return data
+    if signer_id == "default":
+        legacy = load_signer_profile(storage)
+        legacy.setdefault("id", "default")
+        return legacy
+    return {"id": signer_id, "company_aliases": [], "signer_aliases": [], "match_markers": []}
+
+
+def detect_signer_profile(
+    storage: Optional[StorageBackend],
+    doc_text: str,
+    default_id: str = "default",
+) -> str:
+    """Автоопределение профиля по содержимому документа (Модель Б).
+
+    Считает совпадения match_markers каждого профиля в тексте.
+    Возвращает signer_id с максимальным числом совпадений. Fallback на default_id.
+    """
+    profiles = list_signer_profiles(storage)
+    if not profiles:
+        return default_id
+    text_low = (doc_text or "").lower()
+    best_id, best_score = default_id, 0
+    for p in profiles:
+        score = 0
+        for marker in p.get("match_markers", []):
+            m = (marker or "").strip().lower()
+            if m and m in text_low:
+                score += 1
+        if score > best_score:
+            best_score, best_id = score, p.get("id", default_id)
+    return best_id
