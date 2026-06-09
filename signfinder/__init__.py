@@ -74,7 +74,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.18.5"
+__version__ = "1.18.6"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
