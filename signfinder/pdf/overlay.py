@@ -17,7 +17,8 @@ MAX_SIGNATURE_HEIGHT_PT = 85
 MIN_SIGNATURE_HEIGHT_PT = 20
 
 # Горизонтальный сдвиг от левого края подчёркивания (pt)
-SIGNATURE_X_OFFSET_PT = -12
+# 0 = подпись начинается точно от левого края подчёркивания (после trim белых полей PNG)
+SIGNATURE_X_OFFSET_PT = 0
 
 
 def apply_signature(
@@ -46,6 +47,7 @@ def apply_signature(
     sig_h, sig_w = 0.0, 0.0
     if use_signature and png_bytes:
         img = Image.open(io.BytesIO(png_bytes))
+        img = _trim_signature(img)   # убрать белые/прозрачные поля
         png_w, png_h = img.size
         aspect = png_w / png_h if png_h else 1.0
         img_rgb, mask_bytes = _split_rgba_png(img)
@@ -184,6 +186,25 @@ def _find_underscore_anchor(page, bbox, pattern: str):
         return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
     # Иначе — паттерн вида "Роль____", x0 = текстовый блок, сдвигаем к хвосту.
     return x0 + (x1 - x0) * 0.3, y1, line_height
+
+
+def _trim_signature(img: Image.Image) -> Image.Image:
+    """Обрезать пустые (белые/прозрачные) поля вокруг подписи.
+
+    Гарантирует, что sig_rect в PDF начинается точно от реального контура подписи,
+    а не от края исходного PNG с его полями.
+    """
+    if img.mode == "RGBA":
+        # Обрезаем по непрозрачным пикселям (alpha > 0)
+        bbox = img.getbbox()
+        return img.crop(bbox) if bbox else img
+
+    # RGB: ищем тёмные пиксели (сама подпись)
+    from PIL import ImageOps
+    gray = img.convert("L")
+    inverted = ImageOps.invert(gray)   # белое → 0, подпись → >0
+    bbox = inverted.getbbox()
+    return img.crop(bbox) if bbox else img
 
 
 def _split_rgba_png(img: Image.Image) -> tuple[bytes, bytes | None]:
