@@ -17,7 +17,7 @@ MAX_SIGNATURE_HEIGHT_PT = 85
 MIN_SIGNATURE_HEIGHT_PT = 20
 
 # Горизонтальный сдвиг от левого края подчёркивания (pt)
-SIGNATURE_X_OFFSET_PT = 20
+SIGNATURE_X_OFFSET_PT = 5
 
 
 def apply_signature(
