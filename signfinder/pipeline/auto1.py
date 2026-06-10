@@ -491,16 +491,60 @@ def run_step5(
     return matches
 
 
+def _add_reverse_dot_patterns(
+    final_patterns: list,
+    our_side,
+) -> list:
+    """Добавить паттерны \.{5,}\\nX для случаев когда точечная линия ПЕРЕД названием.
+
+    IndividualProject формат:
+      ......................................................
+      Innowise Sp. z o.o (d/b/a Innowise Group)
+      (Agent)
+    Нужен паттерн: \\.{5,}\\n[^\\n]{0,15}Innowise
+    Работает для всех документов, не только dual_column.
+    """
+    if not our_side:
+        return final_patterns
+
+    anchors_to_check = []
+    le = (our_side.get("legal_entity") or "").strip()
+    if le:
+        anchors_to_check.append(le[:15])
+    for role in (our_side.get("roles") or []):
+        r = (role or "").strip()
+        if r and len(r) > 3:
+            anchors_to_check.append(r)
+
+    extras = []
+    for anchor in anchors_to_check:
+        try:
+            esc = re.escape(anchor)
+            p_dot_nl = rf"\.{{5,}}\n[^\n]{{0,15}}{esc}"
+            p_dot_same = rf"\.{{5,}}[^\n]{{0,30}}{esc}"
+            for p in [p_dot_nl, p_dot_same]:
+                re.compile(p, re.IGNORECASE | re.UNICODE)
+                if p not in final_patterns:
+                    extras.append(p)
+        except re.error:
+            pass
+
+    return final_patterns + extras
+
+
 def _filter_by_our_side_context(
     matches: list,
     page_texts: list,
     our_side: dict,
-    window_chars: int = 200,
 ) -> list:
-    """Оставить только матчи где рядом (±200 символов) есть наши синонимы.
+    """Оставить только матчи где в 80 символах ПЕРЕД якорем есть наши синонимы.
 
-    Решает проблему ложных блоков клиента: паттерн 'ОВЛАСТЕНО ЛИЦЕ' срабатывает
-    и на клиентском блоке, и на нашем — но наш всегда рядом с 'Innowise'.
+    Смотрим только назад — не вперёд. Это исключает ситуацию когда Innowise
+    стоит ПОСЛЕ клиентского якоря и попадает в двунаправленное окно.
+
+    Структура текста: КЛИЕНТ_ЯКОРЬ ... Innowise_ЯКОРЬ
+    → для клиентского якоря 80 символов назад — нет Innowise → фильтруется.
+    → для Innowise якоря 80 символов назад — есть "Innowise Group:" → остаётся.
     """
     if not our_side or not matches:
         return matches
@@ -539,8 +583,8 @@ def _filter_by_our_side_context(
             result.append(m)
             continue
 
-        ctx_start = max(0, match_pos - window_chars)
-        ctx_end = min(len(page_text), match_pos + len(anchor_text) + window_chars)
+        ctx_start = max(0, match_pos - 80)
+        ctx_end = match_pos  # только то что ПЕРЕД якорем
         ctx = page_text[ctx_start:ctx_end]
 
         if any(syn in ctx for syn in synonyms):
@@ -668,7 +712,12 @@ def run_pipeline_auto_1(
         patterns = final_patterns
         debug["multiline_extra_patterns"] = multiline_extra
 
-    debug["final_patterns"] = patterns
+    # Обратные паттерны для точечных линий (\.{5,} → название компании)
+    # Работает для всех документов, не только dual_column
+    final_patterns = _add_reverse_dot_patterns(final_patterns, our_side)
+    patterns = final_patterns
+
+    debug["final_patterns"] = final_patterns
 
     # Step 5 — только find_signatures, без валидатора
     matches = run_step5(doc, our_side, patterns)
