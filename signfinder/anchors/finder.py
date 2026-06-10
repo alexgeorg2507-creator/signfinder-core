@@ -243,7 +243,7 @@ def _is_alias_in_role_phrase(pre_context, matched_text, alias_tokens):
 # ── Поиск ─────────────────────────────────────────────────────────────────────
 
 def _has_real_signature_line(text: str) -> bool:
-    return bool(re.search(r"_{3,}|\.{5,}", text))
+    return bool(re.search(r"_{3,}|\.{5,}|\\[tse]\d+\\", text))
 
 
 def _bbox_overlap_ratio(a, b) -> float:
@@ -419,12 +419,6 @@ def apply_template_anchors(doc, template) -> list[SignMatch]:
                 continue
 
             pattern_str = anchor.generated_pattern
-            regex = None
-            if pattern_str:
-                try:
-                    regex = re.compile(pattern_str, re.IGNORECASE | re.UNICODE)
-                except re.error:
-                    sys.stderr.write(f"[finder] bad anchor pattern: {pattern_str}\n")
 
             if anchor.page_hint == "first":
                 page_range = [0]
@@ -437,6 +431,38 @@ def apply_template_anchors(doc, template) -> list[SignMatch]:
                     page_range = [int(anchor.page_hint)]
                 except (ValueError, TypeError):
                     page_range = list(range(len(doc.pages)))
+
+            # v1.18.2 FIX: ручные якоря (manual_click) несут точный bbox, выбранный
+            # оператором кликом. Повторный прогон generated_pattern перенёс бы подпись
+            # на другую подчёркнутую линию (паттерн матчит несколько мест на странице).
+            # Берём сохранённый bbox напрямую — ровно туда, куда поставил оператор.
+            if getattr(anchor, "added_by", "") == "manual_click":
+                bbox = anchor.bbox
+                fb_page = page_range[0] if page_range else 0
+                if (isinstance(bbox, (list, tuple)) and len(bbox) == 4
+                        and 0 <= fb_page < len(doc.pages)):
+                    counter += 1
+                    matches.append(SignMatch(
+                        id=f"tpl_{counter:03d}",
+                        page=fb_page,
+                        bbox=tuple(bbox),
+                        context=(anchor.anchor_text or "")[:120],
+                        party=getattr(template, "name", "template"),
+                        pattern=pattern_str or "",
+                        added_by="manual_click",
+                    ))
+                    sys.stderr.write(
+                        f"[finder] manual-anchor direct bbox page={fb_page} "
+                        f"text={repr((anchor.anchor_text or '')[:40])}\n"
+                    )
+                continue
+
+            regex = None
+            if pattern_str:
+                try:
+                    regex = re.compile(pattern_str, re.IGNORECASE | re.UNICODE)
+                except re.error:
+                    sys.stderr.write(f"[finder] bad anchor pattern: {pattern_str}\n")
 
             anchor_match_count = 0
 
@@ -499,6 +525,34 @@ def apply_template_anchors(doc, template) -> list[SignMatch]:
     finally:
         pdf_doc.close()
     return matches
+
+
+def manual_match_to_anchor(match: SignMatch, page_idx: int) -> TextAnchor:
+    """SignMatch ручного якоря → TextAnchor с сохранением added_by='manual_click'.
+
+    v1.18.3: без этого провенанс терялся (regex_match_to_anchor хардкодит
+    'auto_regex'), и при повторном сохранении/загрузке шаблона ручной якорь
+    деградировал в auto → подпись «уезжала» на regex-линию. Сохраняем точный
+    bbox оператора и флаг manual_click — стабильно через любое число циклов.
+    """
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    bbox = match.bbox if isinstance(match.bbox, tuple) else tuple(match.bbox)
+    return TextAnchor(
+        id=uuid4().hex,
+        anchor_type="text_proximity",
+        anchor_level=1,
+        anchor_text=(match.context or "").strip()[:120],
+        position="on",
+        offset_pt=0.0,
+        generated_pattern=match.pattern or "",
+        context_before="",
+        context_after="",
+        page_hint=str(page_idx),
+        added_by="manual_click",
+        added_at=datetime.now(timezone.utc).isoformat(),
+        bbox=bbox,
+    )
 
 
 def regex_match_to_anchor(match: SignMatch, page_idx: int, language: str) -> TextAnchor:

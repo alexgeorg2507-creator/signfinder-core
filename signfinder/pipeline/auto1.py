@@ -532,6 +532,58 @@ def _add_reverse_dot_patterns(
     return final_patterns + extras
 
 
+def _add_docusign_tab_patterns(
+    final_patterns: list,
+    our_side: dict,
+    page_texts: list[str],
+) -> list:
+    r"""Добавить паттерны для DocuSign tab-маркеров (\t1\, \s1\, \e1\).
+
+    DocuSign вставляет в текст PDF маркеры вида \t1\ (SignHere), \e1\ (DateSigned),
+    \s1\ (InitialHere). Пара \t1\ + \e1\ — это ОДНО место подписи.
+    Используем только \t (SignHere) как якорь, чтобы не дублировать.
+
+    Формат страницы 4 IndividualProject:
+      \t1\
+      \e1\
+      Place, date
+      Innowise Sp. z o.o (d/b/a Innowise Group)
+      (Agent)
+
+    Паттерн: \\t\d+\\...Company (через 1-4 строки)
+    """
+    if not our_side:
+        return final_patterns
+
+    # Проверяем наличие DocuSign маркеров в тексте документа
+    has_tabs = any(re.search(r"\\[tse]\d+\\", pt) for pt in page_texts)
+    if not has_tabs:
+        return final_patterns
+
+    anchors_to_check = []
+    le = (our_side.get("legal_entity") or "").strip()
+    if le:
+        anchors_to_check.append(le[:15])
+    for role in (our_side.get("roles") or []):
+        r = (role or "").strip()
+        if r and len(r) > 3:
+            anchors_to_check.append(r)
+
+    extras = []
+    for anchor in anchors_to_check:
+        try:
+            esc = re.escape(anchor)
+            # \t маркер, затем 1-4 строки, затем название компании/роль
+            p = rf"\\t\d+\\[^\n]*\n(?:[^\n]*\n){{0,3}}[^\n]{{0,50}}{esc}"
+            re.compile(p, re.IGNORECASE | re.UNICODE)
+            if p not in final_patterns:
+                extras.append(p)
+        except re.error:
+            pass
+
+    return final_patterns + extras
+
+
 def _filter_by_our_side_context(
     matches: list,
     page_texts: list,
@@ -716,6 +768,11 @@ def run_pipeline_auto_1(
     # Обратные паттерны для точечных линий (\.{5,} → название компании)
     # Работает для всех документов, не только dual_column
     final_patterns = _add_reverse_dot_patterns(final_patterns, our_side)
+    patterns = final_patterns
+
+    # DocuSign tab-маркеры (\t1\, \e1\) — место подписи без текстовых подчёркиваний
+    page_texts_for_tabs = [p.text or "" for p in doc.pages]
+    final_patterns = _add_docusign_tab_patterns(final_patterns, our_side, page_texts_for_tabs)
     patterns = final_patterns
 
     debug["final_patterns"] = final_patterns
