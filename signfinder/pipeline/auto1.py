@@ -576,8 +576,9 @@ def _filter_by_our_side_context(
             result.append(m)
             continue
 
-        anchor_text = (getattr(m, "anchor_text", "") or "").strip().lower()
-        match_pos = page_text.find(anchor_text[:20]) if anchor_text else -1
+        # SignMatch использует 'context', TextAnchor — 'anchor_text'
+        ctx_text = (getattr(m, "context", "") or getattr(m, "anchor_text", "") or "").strip().lower()
+        match_pos = page_text.find(ctx_text[:20]) if ctx_text else -1
 
         if match_pos == -1:
             result.append(m)
@@ -648,7 +649,7 @@ def run_pipeline_auto_1(
     # ── Сборка итогового пула паттернов ──────────────────────────────────────
     # Приоритет: детерминированные паттерны по фамилии подписанта (заякорены на
     # подчёркивании) → корректная позиция подписи в блоке '____ Фамилия'.
-    signer_pats = _signer_underscore_patterns(storage, language, our_side, signer_id=signer_id)
+    signer_pats = _signer_underscore_patterns(storage, effective_language, our_side, signer_id=signer_id)
     debug["signer_underscore_patterns"] = signer_pats
 
     # Нормализация кросс-строчных LLM-паттернов: '[\s\S]' (любой символ, включая
