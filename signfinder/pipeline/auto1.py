@@ -588,8 +588,12 @@ def _filter_by_our_side_context(
     matches: list,
     page_texts: list,
     our_side: dict,
+    trusted_patterns: "set[str] | None" = None,
 ) -> list:
     """Оставить только матчи где в 80 символах ПЕРЕД якорем есть наши синонимы.
+
+    trusted_patterns — паттерны которые всегда доверенные (signer_pats):
+    они уже заякорены на ФИО нашего подписанта, контекст проверять не нужно.
 
     Смотрим только назад — не вперёд. Это исключает ситуацию когда Innowise
     стоит ПОСЛЕ клиентского якоря и попадает в двунаправленное окно.
@@ -618,6 +622,10 @@ def _filter_by_our_side_context(
 
     result = []
     for m in matches:
+        # Доверенные паттерны (по ФИО подписанта) — не фильтруем, они и так специфичны
+        if trusted_patterns and getattr(m, "pattern", "") in trusted_patterns:
+            result.append(m)
+            continue
         page_idx = getattr(m, "page_hint", None) or getattr(m, "page", None)
         if page_idx is None:
             result.append(m)
@@ -790,10 +798,12 @@ def run_pipeline_auto_1(
 
     debug["step5_matches_count"] = len(matches)
 
-    # Пост-фильтр: оставить только матчи рядом с нашей стороной
+    # Пост-фильтр: оставить только матчи рядом с нашей стороной.
+    # signer_pats доверенные — уже заякорены на ФИО подписанта, не фильтруем.
     if our_side:
         matches = _filter_by_our_side_context(
-            matches, [p.text for p in doc.pages], our_side
+            matches, [p.text for p in doc.pages], our_side,
+            trusted_patterns=set(signer_pats),
         )
         debug["our_side_filter"] = {"anchors_after_filter": len(matches)}
 

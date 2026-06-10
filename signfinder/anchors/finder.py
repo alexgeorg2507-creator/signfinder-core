@@ -261,12 +261,23 @@ def _bbox_overlap_ratio(a, b) -> float:
 def _bbox_contains_signature_line(page, match_rect) -> bool:
     line_rects = list(page.search_for("___"))
     line_rects.extend(page.search_for("....."))
-    if not line_rects:
-        return False
-    for line in line_rects:
-        if (line.y0 <= match_rect.y1 and line.y1 >= match_rect.y0 and
-                line.x0 <= match_rect.x1 and line.x1 >= match_rect.x0):
+    if line_rects:
+        for line in line_rects:
+            if (line.y0 <= match_rect.y1 and line.y1 >= match_rect.y0 and
+                    line.x0 <= match_rect.x1 and line.x1 >= match_rect.x0):
+                return True
+    # DocuSign: подчёркивания — графические элементы, маркеры \t1\ есть только в тексте.
+    # Расширяем bbox и ищем \tN\ / \eN\ / \sN\ в тексте страницы вокруг матча.
+    try:
+        expanded = fitz.Rect(
+            match_rect.x0 - 200, match_rect.y0 - 120,
+            match_rect.x1 + 200, match_rect.y1 + 120,
+        )
+        clip_text = page.get_text("text", clip=expanded)
+        if re.search(r"\\[tse]\d+\\", clip_text):
             return True
+    except Exception:
+        pass
     return False
 
 
