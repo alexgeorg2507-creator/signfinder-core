@@ -300,10 +300,10 @@ def _signer_underscore_patterns(storage: StorageBackend, language: str, our_side
     patterns: list[str] = []
     for surname in _extract_surnames(storage, language, our_side, signer_id=signer_id):
         esc = re.escape(surname)
-        # Подчёркивание, затем фамилия в пределах 20 символов на ТОЙ ЖЕ строке.
-        # [^\n]{0,20} пропускает разделители и инициалы перед фамилией:
-        #   '____ Лебедев', '____ (Лебедев', '____ /А. П. ЛЕБЕДЕВ/'
+        # Однострочный (русский формат): ____ Лебедев
         patterns.append(rf"_{{3,}}[^\n]{{0,20}}{esc}")
+        # Многострочный (PL/MK формат): ____\nВадим Борисов
+        patterns.append(rf"_{{3,}}\n[^\n]{{0,20}}{esc}")
     return patterns
 
 
@@ -591,6 +591,24 @@ def run_pipeline_auto_1(
         patterns = final_patterns
     else:
         sys.stderr.write("[auto1] WARNING: no safe patterns, keeping originals\n")
+
+    # Многострочные паттерны для документов с вертикальной компоновкой подписи
+    # (роль\n___\nимя вместо роль _____ имя)
+    if getattr(doc, "layout", "single_column") == "dual_column_vertical":
+        multiline_extra = []
+        for mw in effective_markers.get("marker_words", []):
+            esc_mw = re.escape(mw)
+            p = rf"{esc_mw}[^\n]{{0,10}}\n[^\n]{{0,10}}_{{3,}}"
+            try:
+                re.compile(p, re.IGNORECASE | re.UNICODE)
+                if p not in final_patterns:
+                    multiline_extra.append(p)
+            except re.error:
+                pass
+        final_patterns.extend(multiline_extra)
+        patterns = final_patterns
+        debug["multiline_extra_patterns"] = multiline_extra
+
     debug["final_patterns"] = patterns
 
     # Step 5 — только find_signatures, без валидатора
