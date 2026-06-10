@@ -30,6 +30,7 @@ def apply_signature(
     use_signature: bool = True,
     use_marker: bool = False,
     marker_color: str = "pink",
+    sign_above_line: bool = False,
 ) -> bytes:
     """Наложить PNG подписи и/или маркер места подписи на PDF.
 
@@ -62,7 +63,7 @@ def apply_signature(
             continue
 
         page = doc[m.page]
-        anchor_x, anchor_y_bottom, _ = _find_underscore_anchor(page, m.bbox, m.pattern)
+        anchor_x, anchor_y_bottom, _ = _find_underscore_anchor(page, m.bbox, m.pattern, above_line=sign_above_line)
         bbox = list(m.bbox)  # [x0, y0, x1, y1]
 
         # PNG подпись
@@ -113,7 +114,7 @@ def _extract_literal_prefix(pattern: str) -> str:
     return ''.join(result).strip()
 
 
-def _find_underscore_anchor(page, bbox, pattern: str):
+def _find_underscore_anchor(page, bbox, pattern: str, above_line: bool = False):
     """Найти позицию подчёркиваний для размещения подписи.
 
     Логика приоритетов:
@@ -124,6 +125,8 @@ def _find_underscore_anchor(page, bbox, pattern: str):
     3. Rawdict char-level — fallback.
     4. search_for("___") — fallback.
     5. Пропорциональный сдвиг от x0 — последний резерв.
+
+    above_line=True: возвращает y0 линии вместо y1 (подпись ставится НАД линией).
     """
     x0, y0, x1, y1 = bbox
     line_height = y1 - y0
@@ -133,7 +136,8 @@ def _find_underscore_anchor(page, bbox, pattern: str):
     # LLM может генерировать (?:_{3,}...) — убираем (?:...) перед проверкой.
     _pat_norm = re.sub(r'^\(\?:', '', pattern)
     if _pat_norm.startswith("_"):
-        return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
+        y_pos = y0 if above_line else y1
+        return x0 + SIGNATURE_X_OFFSET_PT, y_pos, line_height
 
     # 2. Текстовый префикс роли (напр. "Заказчик") — самый надёжный метод:
     #    находим текст на странице, берём его правый край rr.x1
@@ -142,7 +146,8 @@ def _find_underscore_anchor(page, bbox, pattern: str):
         for rr in page.search_for(prefix):
             rr_yc = (rr.y0 + rr.y1) / 2
             if abs(rr_yc - y_center) < 5 and rr.x0 >= x0 - 5:
-                return rr.x1 + SIGNATURE_X_OFFSET_PT, y1, line_height
+                y_pos = y0 if above_line else y1
+                return rr.x1 + SIGNATURE_X_OFFSET_PT, y_pos, line_height
 
     # 3. Rawdict char-level — точная позиция символа '_'
     try:
@@ -159,7 +164,8 @@ def _find_underscore_anchor(page, bbox, pattern: str):
                             continue
                         if cb[0] < x0 - 5 or cb[0] > x1:
                             continue
-                        return float(cb[0]) + SIGNATURE_X_OFFSET_PT, y1, line_height
+                        cb_y = float(cb[1]) if above_line else float(cb[3])
+                        return float(cb[0]) + SIGNATURE_X_OFFSET_PT, cb_y, line_height
     except Exception:
         pass
 
@@ -177,15 +183,17 @@ def _find_underscore_anchor(page, bbox, pattern: str):
             best_dist = d
             best = r
     if best:
-        return best.x0 + SIGNATURE_X_OFFSET_PT, best.y1, max(line_height, best.height)
+        y_pos = best.y0 if above_line else best.y1
+        return best.x0 + SIGNATURE_X_OFFSET_PT, y_pos, max(line_height, best.height)
 
     # 5. Последний резерв.
     # Если паттерн начинается с '_' — подчёркивание графическое, но x0 bbox корректен.
     # Используем x0 + offset, а не пропорцию (которая смещала бы вправо на ~40pt).
+    y_pos = y0 if above_line else y1
     if _pat_norm.startswith("_"):
-        return x0 + SIGNATURE_X_OFFSET_PT, y1, line_height
+        return x0 + SIGNATURE_X_OFFSET_PT, y_pos, line_height
     # Иначе — паттерн вида "Роль____", x0 = текстовый блок, сдвигаем к хвосту.
-    return x0 + (x1 - x0) * 0.3, y1, line_height
+    return x0 + (x1 - x0) * 0.3, y_pos, line_height
 
 
 def _trim_signature(img: Image.Image) -> Image.Image:

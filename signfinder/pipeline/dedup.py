@@ -35,11 +35,13 @@ def dedup_anchors(anchors: list) -> list:
             step1.append(a)
 
     # ── Шаг 2: семантические дубли — одна страница, одинаковый text[:30] ─────
+    # x_bucket: делим по 100pt — колонки обычно разнесены на 250-350pt
     groups: dict = defaultdict(list)
     for a in step1:
         text_key = (_attr(a, "anchor_text", "") or "")[:30]
         page_key = str(_attr(a, "page_hint", "0"))
-        groups[(page_key, text_key)].append(a)
+        x_bucket = round(float(_bbox(a)[0]) / 100.0)
+        groups[(page_key, text_key, x_bucket)].append(a)
 
     step2: list = []
     for group in groups.values():

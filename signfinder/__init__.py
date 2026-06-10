@@ -235,6 +235,8 @@ class SignFinder:
         use_marker: bool = False,
         marker_color: str = "pink",
     ) -> bytes:
+        sign_mode = self.storage.read_json("settings/sign_mode.json") or {}
+        sign_above_line = sign_mode.get("sign_above_line", False)
         matches = [self._to_match(a) for a in anchors_or_matches]
         return apply_signature(
             pdf_bytes, matches, png_bytes,
@@ -242,6 +244,7 @@ class SignFinder:
             use_signature=use_signature,
             use_marker=use_marker,
             marker_color=marker_color,
+            sign_above_line=sign_above_line,
         )
 
     def build_anchor_from_click(self, pdf_bytes: bytes, page: int, x: float, y: float, language: str = "ru") -> Optional[TextAnchor]:
