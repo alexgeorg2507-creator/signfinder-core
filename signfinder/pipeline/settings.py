@@ -76,6 +76,33 @@ def get_markers_for_language(storage: Optional[StorageBackend], language: str) -
     return markers.get("languages", {}).get(lang, {})
 
 
+def get_markers_for_languages(
+    storage: Optional[StorageBackend],
+    languages: list,
+) -> dict:
+    """Вернуть объединённый блок маркеров для списка языков.
+
+    Используется для двуязычных документов (dual_column_vertical).
+    Списки объединяются без дублей. Скалярные значения — из первого языка.
+
+    Пример: ["en", "mk"] → marker_words включает и "Signature" и "Потпис".
+    """
+    if not languages:
+        return {}
+    result: dict = {}
+    for lang in languages:
+        block = get_markers_for_language(storage, lang)
+        for key, val in block.items():
+            if isinstance(val, list):
+                existing = result.setdefault(key, [])
+                for item in val:
+                    if item not in existing:
+                        existing.append(item)
+            else:
+                result.setdefault(key, val)
+    return result
+
+
 # ── Signer profile ────────────────────────────────────────────────────────
 
 SIGNER_PROFILE_DEFAULTS: dict = {

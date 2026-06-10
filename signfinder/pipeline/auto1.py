@@ -25,7 +25,11 @@ from signfinder.anchors.finder import find_signatures, regex_match_to_anchor
 from signfinder.anchors.models import SignMatch, TextAnchor
 from signfinder.llm.base import LLMClient, LLMError
 from signfinder.pdf.parser import ParsedDocument
-from signfinder.pipeline.settings import get_aliases_for_language, get_markers_for_language
+from signfinder.pipeline.settings import (
+    get_aliases_for_language,
+    get_markers_for_language,
+    get_markers_for_languages,
+)
 from signfinder.prompts.extraction import format_find_our_side
 from signfinder.prompts.regex_generation import format_generate_regex
 from signfinder.storage.base import StorageBackend
@@ -379,6 +383,7 @@ def run_step4(
     storage: StorageBackend,
     llm: LLMClient,
     debug: dict,
+    markers_override: dict | None = None,
 ) -> tuple:
     """Шаг 4: сгенерировать regex-паттерны для нашей стороны.
 
@@ -386,7 +391,8 @@ def run_step4(
         ([patterns], None)  — успех
         (None, error_str)   — провал
     """
-    markers_block = get_markers_for_language(storage, lang)
+    markers_block = markers_override if markers_override is not None \
+        else get_markers_for_language(storage, lang)
     fragments = _get_strategic_fragments(doc, markers_block)
     other_side_names = _build_other_side_names(our_side)
     prompt = format_generate_regex(
@@ -512,13 +518,27 @@ def run_pipeline_auto_1(
     """
     debug: dict = {}
 
+    # Для двуязычных документов: объединить маркеры всех языков
+    # и передать LLM составной хинт ("en, mk" вместо "en").
+    doc_languages = getattr(doc, "languages", []) or [language]
+    if len(doc_languages) > 1:
+        effective_language = ", ".join(doc_languages)
+        effective_markers = get_markers_for_languages(storage, doc_languages)
+    else:
+        effective_language = language
+        effective_markers = get_markers_for_language(storage, language)
+
+    debug["effective_language"] = effective_language
+    debug["doc_languages"] = doc_languages
+
     # Step 3
-    our_side, err = run_step3(doc, language, storage, llm, debug, signer_id=signer_id)
+    our_side, err = run_step3(doc, effective_language, storage, llm, debug, signer_id=signer_id)
     if err or our_side is None:
         return PipelineResult(ok=False, error=err, debug=debug)
 
     # Step 4
-    patterns, err = run_step4(doc, language, our_side, storage, llm, debug)
+    patterns, err = run_step4(doc, effective_language, our_side, storage, llm, debug,
+                              markers_override=effective_markers)
     if err or patterns is None:
         return PipelineResult(ok=False, error=err, our_side=our_side, debug=debug)
 
@@ -553,7 +573,7 @@ def run_pipeline_auto_1(
     debug["patterns_crossline_normalized"] = norm_count
 
     # Структурные паттерны из markers (name-independent, '_{3,} (...)')
-    markers_block = get_markers_for_language(storage, language)
+    markers_block = effective_markers
     structural = []
     for sp in markers_block.get("signature_block_patterns", []):
         try:
