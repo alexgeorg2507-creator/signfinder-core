@@ -491,6 +491,65 @@ def run_step5(
     return matches
 
 
+def _filter_by_our_side_context(
+    matches: list,
+    page_texts: list,
+    our_side: dict,
+    window_chars: int = 200,
+) -> list:
+    """Оставить только матчи где рядом (±200 символов) есть наши синонимы.
+
+    Решает проблему ложных блоков клиента: паттерн 'ОВЛАСТЕНО ЛИЦЕ' срабатывает
+    и на клиентском блоке, и на нашем — но наш всегда рядом с 'Innowise'.
+    """
+    if not our_side or not matches:
+        return matches
+
+    synonyms = set()
+    le = (our_side.get("legal_entity") or "").strip().lower()
+    if le:
+        synonyms.add(le[:10])
+    for role in (our_side.get("roles") or []):
+        r = (role or "").strip().lower()
+        if r and len(r) > 3:
+            synonyms.add(r)
+    signer = (our_side.get("signer") or "").strip().lower()
+    if signer:
+        synonyms.add(signer[:8])
+
+    if not synonyms:
+        return matches
+
+    result = []
+    for m in matches:
+        page_idx = getattr(m, "page_hint", None) or getattr(m, "page", None)
+        if page_idx is None:
+            result.append(m)
+            continue
+        try:
+            page_text = page_texts[int(page_idx)].lower()
+        except (IndexError, TypeError):
+            result.append(m)
+            continue
+
+        anchor_text = (getattr(m, "anchor_text", "") or "").strip().lower()
+        match_pos = page_text.find(anchor_text[:20]) if anchor_text else -1
+
+        if match_pos == -1:
+            result.append(m)
+            continue
+
+        ctx_start = max(0, match_pos - window_chars)
+        ctx_end = min(len(page_text), match_pos + len(anchor_text) + window_chars)
+        ctx = page_text[ctx_start:ctx_end]
+
+        if any(syn in ctx for syn in synonyms):
+            result.append(m)
+        # else: фильтруем — это блок другой стороны
+
+    return result
+
+
 # ── Главная точка входа ───────────────────────────────────────────────────────
 
 def run_pipeline_auto_1(
@@ -623,6 +682,22 @@ def run_pipeline_auto_1(
         )
 
     debug["step5_matches_count"] = len(matches)
+
+    # Пост-фильтр: оставить только матчи рядом с нашей стороной
+    if our_side:
+        matches = _filter_by_our_side_context(
+            matches, [p.text for p in doc.pages], our_side
+        )
+        debug["our_side_filter"] = {"anchors_after_filter": len(matches)}
+
+    if not matches:
+        return PipelineResult(
+            ok=False,
+            error="Шаг 5: После фильтрации по контексту нашей стороны мест подписи не осталось.",
+            our_side=our_side,
+            patterns=patterns,
+            debug=debug,
+        )
 
     # SignMatch → TextAnchor
     anchors: list[TextAnchor] = []

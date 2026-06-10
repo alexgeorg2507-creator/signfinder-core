@@ -141,17 +141,27 @@ def get_aliases_for_language(
 ) -> dict[str, list[str]]:
     """Вернуть {company: [...], signer: [...]} алиасов для языка КОНКРЕТНОГО профиля.
 
-    Fallback: если для языка пусто — возвращает все.
+    Поддерживает составной язык ("mk, en") — возвращает алиасы для ВСЕХ языков.
+    Fallback: если для запрошенных языков пусто — возвращает все алиасы.
     """
     profile = load_signer_profile_by_id(storage, signer_id)
-    lang = (language or "").lower()[:2]
+    # Составной язык ("mk, en") → набор кодов {"mk", "en"}
+    raw_langs = (language or "")
+    langs = {l.strip()[:2].lower() for l in raw_langs.split(",") if l.strip()}
+    if not langs:
+        langs = {"ru"}
 
     def _filter(key: str) -> list[str]:
         all_aliases = profile.get(key, [])
-        by_lang = [a["value"] for a in all_aliases
-                   if a.get("language") == lang and a.get("value", "").strip()]
-        if by_lang:
-            return by_lang
+        # Берём алиасы для ВСЕХ запрошенных языков
+        by_langs = [
+            a["value"] for a in all_aliases
+            if a.get("language", "")[:2].lower() in langs
+            and a.get("value", "").strip()
+        ]
+        if by_langs:
+            return by_langs
+        # Fallback: все алиасы (как раньше)
         return [a["value"] for a in all_aliases if a.get("value", "").strip()]
 
     return {
