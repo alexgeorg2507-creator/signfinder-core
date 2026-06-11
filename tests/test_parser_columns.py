@@ -145,11 +145,15 @@ def test_parse_pdf_text_ordered_by_columns():
 
 
 def _make_single_column_pdf() -> bytes:
-    """PDF с короткими строками в левой части страницы — однозначно single_column."""
+    """PDF с широкими строками пересекающими центральную зону — однозначно single_column."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    for i, line in enumerate(["Short line", "Another line", "Third line", "End."]):
-        page.insert_text((50, 100 + i * 20), line, fontsize=10)
+    # Строки должны пересекать центральную зону (35-65% ширины, т.е. ~208-386pt от левого края).
+    # Фраза начинается с x=50, при fontsize=10 ≈5pt/символ, нужно >160 символов до центра.
+    # Используем длинные строки заполняющие страницу от левого до правого края.
+    long_line = "This is a single column document with text spanning the full width of the page."
+    for i in range(8):
+        page.insert_text((50, 100 + i * 25), long_line, fontsize=10)
     buf = io.BytesIO()
     doc.save(buf)
     doc.close()
@@ -157,7 +161,7 @@ def _make_single_column_pdf() -> bytes:
 
 
 def test_parse_pdf_single_column():
-    """Одноколоночный PDF (короткие строки слева) → layout=single_column."""
+    """Одноколоночный PDF (широкие строки на всю ширину) → layout=single_column."""
     pdf = _make_single_column_pdf()
     doc = parse_pdf_bytes(pdf, filename="test.pdf")
     assert doc.layout == "single_column"
