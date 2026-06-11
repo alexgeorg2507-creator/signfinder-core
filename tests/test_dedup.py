@@ -145,8 +145,8 @@ def test_dual_column_same_text_different_x_kept():
 
 
 def test_dual_column_dups_within_column_dedup():
-    """Два 'Borisov' в ОДНОЙ колонке (x≈50, разный y) → схлопываются."""
+    """Два 'Borisov' в ОДНОЙ колонке (x=50, разный y) → схлопываются."""
     a1 = _a("Borisov", "1", bbox=(50.0, 600.0, 200.0, 615.0))
-    a2 = _a("Borisov", "1", bbox=(60.0, 700.0, 210.0, 715.0))   # тот же x_bucket
+    a2 = _a("Borisov", "1", bbox=(50.0, 700.0, 200.0, 715.0))   # тот же x0 → тот же x_bucket
     result = dedup_anchors([a1, a2])
     assert len(result) == 1

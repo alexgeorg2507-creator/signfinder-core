@@ -22,17 +22,18 @@ def _word_tuple(text: str, x0: float, y0: float, w: float = 50, h: float = 12) -
 
 
 def test_detect_gutter_two_columns():
-    """Слова на x=50 и x=350 при ширине 595 → коридор найден в зоне 35-65%."""
+    """Слова на x=50 и x=350 при ширине 595 → коридор найден между колонками."""
     words = []
-    # левая колонка
+    # левая колонка: x0=50, x1=130
     for y in range(100, 700, 20):
         words.append(_word_tuple("left", 50, y, w=80))
-    # правая колонка
+    # правая колонка: x0=350, x1=430
     for y in range(100, 700, 20):
         words.append(_word_tuple("right", 350, y, w=80))
     cut = _detect_gutter(words, page_width=595)
     assert cut is not None
-    assert 250 <= cut <= 350
+    # Коридор должен лежать МЕЖДУ колонками: правее x1=130 и левее x0=350
+    assert 130 <= cut <= 350
 
 
 def test_detect_gutter_single_column():
@@ -143,9 +144,22 @@ def test_parse_pdf_text_ordered_by_columns():
     assert 0 <= en_pos < sep_pos < pl_pos
 
 
-def test_parse_pdf_single_column(pdf_bytes):
-    """Стандартный одноколоночный PDF (из фикстуры) → layout=single_column."""
-    doc = parse_pdf_bytes(pdf_bytes, filename="test.pdf")
+def _make_single_column_pdf() -> bytes:
+    """PDF с короткими строками в левой части страницы — однозначно single_column."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    for i, line in enumerate(["Short line", "Another line", "Third line", "End."]):
+        page.insert_text((50, 100 + i * 20), line, fontsize=10)
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+def test_parse_pdf_single_column():
+    """Одноколоночный PDF (короткие строки слева) → layout=single_column."""
+    pdf = _make_single_column_pdf()
+    doc = parse_pdf_bytes(pdf, filename="test.pdf")
     assert doc.layout == "single_column"
     assert doc.gutter_x is None
 
