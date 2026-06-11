@@ -141,6 +141,28 @@ def _find_underscore_anchor(page, bbox, pattern: str, above_line: bool = False):
     line_height = y1 - y0
     y_center = (y0 + y1) / 2
 
+    # 0. DocuSign-тег рядом с якорем — ставим точно на тег.
+    # Тег \tN\ \sN\ \eN\ — текстовое слово с координатами. blacklist \dN\ (дата),
+    # \aN\ (инициалы). Срабатывает ТОЛЬКО если теги реально есть в тексте —
+    # для русских/обычных документов words не содержит \xN\ и проваливается в case 1.
+    try:
+        words = page.get_text("words")  # (x0,y0,x1,y1,text,...)
+        ds_tags = [w for w in words if re.match(r'\\[tse]\d+\\', w[4])]  # t/s/e, НЕ d/a
+        if ds_tags:
+            best_tag = None
+            best_d = float("inf")
+            for w in ds_tags:
+                tag_yc = (w[1] + w[3]) / 2
+                dy = abs(tag_yc - y_center)
+                if dy < best_d and dy < 150:  # ближайший по y тег в окне 150pt
+                    best_d = dy
+                    best_tag = w
+            if best_tag is not None:
+                tag_y = best_tag[1] if above_line else best_tag[3]
+                return best_tag[0], tag_y, (best_tag[3] - best_tag[1])
+    except Exception:
+        pass
+
     # 1. Паттерн начинается с подчёркивания ИЛИ с точечной линии (\. = \.{5,}...).
     # LLM может генерировать (?:_{3,}...) — убираем (?:...) перед проверкой.
     # Для обратных паттернов (линия стоит ДО названия: ".....\nInnowise") bbox

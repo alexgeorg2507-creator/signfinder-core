@@ -655,6 +655,60 @@ def _filter_by_our_side_context(
     return result
 
 
+def _cluster_signature_blocks(
+    matches: list,
+    aliases_ordered: list[str],
+    y_radius: float = 60.0,
+) -> list:
+    """Сгруппировать матчи в блоки подписи, выбрать по одному на блок.
+
+    Блок = матчи на одной странице в пределах y_radius по вертикали с X-перекрытием.
+    Победитель в блоке — чей контекст содержит синоним, стоящий РАНЬШЕ в
+    aliases_ordered (порядок синонимов в профиле = приоритет оператора).
+    Если приоритет равный — самый широкий bbox (полная линия, не фрагмент).
+    """
+    if not matches:
+        return matches
+
+    # Приоритет синонима: индекс в aliases_ordered (меньше = важнее)
+    def _synonym_rank(m) -> int:
+        ctx = (getattr(m, "context", "") or "").lower()
+        for i, alias in enumerate(aliases_ordered):
+            if alias and alias.lower()[:15] in ctx:
+                return i
+        return len(aliases_ordered)  # не нашли синоним → низший приоритет
+
+    def _bbox_width(m) -> float:
+        b = m.bbox
+        return b[2] - b[0]
+
+    # Группировка по странице + вертикальной близости
+    clusters: list[list] = []
+    for m in sorted(matches, key=lambda x: (x.page, (x.bbox[1] + x.bbox[3]) / 2)):
+        m_yc = (m.bbox[1] + m.bbox[3]) / 2
+        placed = False
+        for cluster in clusters:
+            ref = cluster[0]
+            if ref.page != m.page:
+                continue
+            ref_yc = (ref.bbox[1] + ref.bbox[3]) / 2
+            # X-перекрытие: матчи одной колонки/блока
+            x_overlap = min(m.bbox[2], ref.bbox[2]) > max(m.bbox[0], ref.bbox[0])
+            if abs(m_yc - ref_yc) <= y_radius and x_overlap:
+                cluster.append(m)
+                placed = True
+                break
+        if not placed:
+            clusters.append([m])
+
+    # Выбор победителя в каждом кластере
+    winners = []
+    for cluster in clusters:
+        winner = min(cluster, key=lambda m: (_synonym_rank(m), -_bbox_width(m)))
+        winners.append(winner)
+    return winners
+
+
 # ── Главная точка входа ───────────────────────────────────────────────────────
 
 def run_pipeline_auto_1(
@@ -825,13 +879,44 @@ def run_pipeline_auto_1(
             debug=debug,
         )
 
+    # Кластеризация блоков подписи + выбор по приоритету синонима.
+    # Якоря в вертикальном радиусе ~60pt с X-перекрытием = ОДИН блок = ОДНА подпись.
+    # Победитель — чей синоним РАНЬШЕ в порядке профиля (company → signer → roles).
+    if our_side:
+        aliases_ordered: list[str] = []
+        le = our_side.get("legal_entity", "")
+        if le:
+            aliases_ordered.append(le)
+        signer = our_side.get("signer", "")
+        if signer:
+            aliases_ordered.append(signer)
+        for r in (our_side.get("roles") or []):
+            if r:
+                aliases_ordered.append(r)
+
+        before_cluster = len(matches)
+        matches = _cluster_signature_blocks(matches, aliases_ordered)
+        debug["clustering"] = {
+            "before": before_cluster,
+            "after": len(matches),
+            "aliases_order": aliases_ordered,
+        }
+
     # SignMatch → TextAnchor
     anchors: list[TextAnchor] = []
+    empty_pattern = 0
     for m in matches:
         try:
-            anchors.append(regex_match_to_anchor(m, m.page, language))
+            anchor = regex_match_to_anchor(m, m.page, language)
+            if not (anchor.generated_pattern or "").strip():
+                empty_pattern += 1
+            anchors.append(anchor)
         except Exception as e:
             sys.stderr.write(f"[auto1] regex_match_to_anchor failed for {m.id}: {e}\n")
+    # ФИКС 1 (диагностика): сколько якорей ушло с пустым pattern.
+    # generated_pattern нужен overlay (_find_underscore_anchor) чтобы понять тип
+    # привязки (начинается с '_' → x0; иначе текст-префикс). Пустой → fallback case 5.
+    debug["anchors_empty_pattern"] = empty_pattern
 
     return PipelineResult(
         ok=True,
