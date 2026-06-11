@@ -145,15 +145,22 @@ def test_parse_pdf_text_ordered_by_columns():
 
 
 def _make_single_column_pdf() -> bytes:
-    """PDF с широкими строками пересекающими центральную зону — однозначно single_column."""
+    """PDF с разными длинными строками — слова в разных позициях по x, нет единого коридора."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    # Строки должны пересекать центральную зону (35-65% ширины, т.е. ~208-386pt от левого края).
-    # Фраза начинается с x=50, при fontsize=10 ≈5pt/символ, нужно >160 символов до центра.
-    # Используем длинные строки заполняющие страницу от левого до правого края.
-    long_line = "This is a single column document with text spanning the full width of the page."
-    for i in range(8):
-        page.insert_text((50, 100 + i * 25), long_line, fontsize=10)
+    # Строки разные → пробелы между словами не совпадают по x → детектор не найдёт единый коридор.
+    lines = [
+        "This single column contract document is for service delivery between parties",
+        "The agreement covers development and testing work described in the appendix",
+        "Payment terms include net thirty days from invoice date upon full completion",
+        "All intellectual property created during performance belongs to the client",
+        "This document represents the complete understanding between both parties here",
+        "Modifications require written consent from authorized representatives only now",
+        "Disputes resolved through binding arbitration under local laws and regulations",
+        "The contract terminates automatically upon completion of all deliverables listed",
+    ]
+    for i, line in enumerate(lines):
+        page.insert_text((50, 100 + i * 25), line, fontsize=10)
     buf = io.BytesIO()
     doc.save(buf)
     doc.close()
@@ -161,7 +168,7 @@ def _make_single_column_pdf() -> bytes:
 
 
 def test_parse_pdf_single_column():
-    """Одноколоночный PDF (широкие строки на всю ширину) → layout=single_column."""
+    """Одноколоночный PDF (разные широкие строки) → layout=single_column."""
     pdf = _make_single_column_pdf()
     doc = parse_pdf_bytes(pdf, filename="test.pdf")
     assert doc.layout == "single_column"
