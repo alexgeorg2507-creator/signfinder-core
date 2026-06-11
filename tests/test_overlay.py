@@ -93,8 +93,8 @@ def test_signature_height_default_scale():
 
 
 def test_signature_x_offset_pt_constant():
-    """SIGNATURE_X_OFFSET_PT == 20."""
-    assert SIGNATURE_X_OFFSET_PT == 20
+    """SIGNATURE_X_OFFSET_PT == 0 (после v1.13 crop по alpha)."""
+    assert SIGNATURE_X_OFFSET_PT == 0
 
 
 def test_default_signature_height_pt_value():

@@ -96,15 +96,17 @@ def test_downscale_wide_image():
 
 
 def test_downscale_preserves_aspect():
-    """Пропорции сохраняются при уменьшении."""
-    original_w, original_h = 1200, 400
-    expected_aspect = original_w / original_h
-    png = _make_signature_png(width=original_w, height=original_h)
+    """Пропорции bbox чернил сохраняются при уменьшении."""
+    png = _make_signature_png(width=1200, height=400)
     result = process_signature(png)
+    # _make_signature_png рисует чернила только в средней трети по Y.
+    # Сравниваем aspect ИТОГОВОГО PNG с aspect BBOX ЧЕРНИЛ, не исходника.
+    bx, by, bw, bh = result.bbox_original
+    expected_aspect = bw / bh if bh > 0 else 1.0
     out_w, out_h = result.output_size
     actual_aspect = out_w / out_h if out_h > 0 else 0
-    # Аспект должен совпадать с точностью до округления
-    assert abs(actual_aspect - expected_aspect) < 0.2
+    # Допуск 5% — округление при downscale до 600px
+    assert abs(actual_aspect - expected_aspect) / expected_aspect < 0.05
 
 
 def test_small_image_not_upscaled():

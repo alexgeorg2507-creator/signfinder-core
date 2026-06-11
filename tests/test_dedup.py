@@ -32,9 +32,9 @@ def test_step1_exact_bbox_dedup():
 
 
 def test_step1_different_bbox_kept():
-    """Разные bbox → оба сохраняются."""
-    a1 = _a("Lessor", "1", bbox=(50.0, 100.0, 200.0, 115.0))
-    a2 = _a("Lessor", "1", bbox=(50.0, 200.0, 200.0, 215.0))
+    """Разные bbox + разный text → оба сохраняются (Шаг 1, exact bbox)."""
+    a1 = _a("Lessor signature", "1", bbox=(50.0, 100.0, 200.0, 115.0))
+    a2 = _a("Lessee signature", "1", bbox=(50.0, 200.0, 200.0, 215.0))
     result = dedup_anchors([a1, a2])
     assert len(result) == 2
 
@@ -128,4 +128,25 @@ def test_dict_anchor_supported():
     """dedup_anchors работает с dict-объектами."""
     a = {"anchor_text": "______", "page_hint": "1", "bbox": [50.0, 100.0, 200.0, 115.0]}
     result = dedup_anchors([a, a])
+    assert len(result) == 1
+
+
+# ── Dedup для dual-column (v1.18.7) ──────────────────────────────────────────
+
+def test_dual_column_same_text_different_x_kept():
+    """'Vadim Borisov' в левой колонке (x=50) и правой (x=350) → ОБА остаются.
+
+    Регрессионный тест: в EN+PL документах одинаковый текст в двух колонках
+    не должен схлопываться (фикс x_bucket в Шаге 2)."""
+    left  = _a("Vadim Borisov", "1", bbox=(50.0, 600.0, 200.0, 615.0))
+    right = _a("Vadim Borisov", "1", bbox=(350.0, 600.0, 500.0, 615.0))
+    result = dedup_anchors([left, right])
+    assert len(result) == 2
+
+
+def test_dual_column_dups_within_column_dedup():
+    """Два 'Borisov' в ОДНОЙ колонке (x≈50, разный y) → схлопываются."""
+    a1 = _a("Borisov", "1", bbox=(50.0, 600.0, 200.0, 615.0))
+    a2 = _a("Borisov", "1", bbox=(60.0, 700.0, 210.0, 715.0))   # тот же x_bucket
+    result = dedup_anchors([a1, a2])
     assert len(result) == 1
