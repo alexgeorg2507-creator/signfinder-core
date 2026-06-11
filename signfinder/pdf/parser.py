@@ -162,9 +162,10 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str) -> ParsedDocument:
     if not all_langs:
         all_langs = [language]
 
-    doc_layout = "dual_column_vertical" if any(
-        p.layout == "dual_column_vertical" for p in pages
-    ) else "single_column"
+    # dual только если >=50% страниц dual. Защита от single-документов где
+    # на одной странице два блока подписи бок о бок (IndividualProject стр.3).
+    dual_pages = sum(1 for p in pages if p.layout == "dual_column_vertical")
+    doc_layout = "dual_column_vertical" if (pages and dual_pages >= len(pages) / 2) else "single_column"
     doc_gutter = next((p.gutter_x for p in pages if p.gutter_x is not None), None)
 
     return ParsedDocument(

@@ -40,3 +40,6 @@ class SignMatch:
     status: str = "candidate"
     correction_applied: Optional[str] = None
     operator_excluded: bool = False
+    # Провенанс: 'auto_regex' (regex по тексту) | 'manual_click' (ручная расстановка).
+    # Нужен, чтобы ручной bbox не терялся при конвертации SignMatch → TextAnchor.
+    added_by: str = "auto_regex"

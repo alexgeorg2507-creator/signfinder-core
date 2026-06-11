@@ -44,14 +44,23 @@ def apply_signature(
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
     # Подготовить PNG один раз — только если нужен
-    img_rgb, mask_bytes = None, None
+    img_stream: bytes | None = None
     sig_h, sig_w = 0.0, 0.0
     if use_signature and png_bytes:
         img = Image.open(io.BytesIO(png_bytes))
-        img = _trim_signature(img)   # убрать белые/прозрачные поля
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        # Кроп по alpha-каналу: убираем прозрачные поля для корректного aspect ratio.
+        # Итоговый RGBA передаётся в PyMuPDF напрямую (alpha обрабатывается нативно).
+        _, _, _, a_ch = img.split()
+        content_box = a_ch.getbbox()
+        if content_box:
+            img = img.crop(content_box)
         png_w, png_h = img.size
         aspect = png_w / png_h if png_h else 1.0
-        img_rgb, mask_bytes = _split_rgba_png(img)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        img_stream = buf.getvalue()
         sig_h = min(
             max(MIN_SIGNATURE_HEIGHT_PT, DEFAULT_SIGNATURE_HEIGHT_PT * scale),
             MAX_SIGNATURE_HEIGHT_PT,
@@ -67,14 +76,14 @@ def apply_signature(
         bbox = list(m.bbox)  # [x0, y0, x1, y1]
 
         # PNG подпись
-        if use_signature and img_rgb is not None:
+        if use_signature and img_stream is not None:
             sig_rect = fitz.Rect(
                 anchor_x,
                 anchor_y_bottom - sig_h,
                 anchor_x + sig_w,
                 anchor_y_bottom,
             )
-            page.insert_image(sig_rect, stream=img_rgb, mask=mask_bytes, keep_proportion=True)
+            page.insert_image(sig_rect, stream=img_stream, keep_proportion=True)
 
         # Маркер: ~4×12мм прямоугольник на правом поле, выровнен по центру строки якоря
         if use_marker:
@@ -132,10 +141,12 @@ def _find_underscore_anchor(page, bbox, pattern: str, above_line: bool = False):
     line_height = y1 - y0
     y_center = (y0 + y1) / 2
 
-    # 1. Паттерн сам начинается с подчёркивания (с учётом non-capturing group обёртки).
+    # 1. Паттерн начинается с подчёркивания ИЛИ с точечной линии (\. = \.{5,}...).
     # LLM может генерировать (?:_{3,}...) — убираем (?:...) перед проверкой.
+    # Для обратных паттернов (линия стоит ДО названия: ".....\nInnowise") bbox
+    # из _find_signature_bbox уже клипирован к нужной колонке — x0 корректен.
     _pat_norm = re.sub(r'^\(\?:', '', pattern)
-    if _pat_norm.startswith("_"):
+    if _pat_norm.startswith("_") or _pat_norm.startswith("\\."):
         y_pos = y0 if above_line else y1
         return x0 + SIGNATURE_X_OFFSET_PT, y_pos, line_height
 
@@ -195,24 +206,6 @@ def _find_underscore_anchor(page, bbox, pattern: str, above_line: bool = False):
     # Иначе — паттерн вида "Роль____", x0 = текстовый блок, сдвигаем к хвосту.
     return x0 + (x1 - x0) * 0.3, y_pos, line_height
 
-
-def _trim_signature(img: Image.Image) -> Image.Image:
-    """Обрезать пустые (белые/прозрачные) поля вокруг подписи.
-
-    Гарантирует, что sig_rect в PDF начинается точно от реального контура подписи,
-    а не от края исходного PNG с его полями.
-    """
-    if img.mode == "RGBA":
-        # Обрезаем по непрозрачным пикселям (alpha > 0)
-        bbox = img.getbbox()
-        return img.crop(bbox) if bbox else img
-
-    # RGB: ищем тёмные пиксели (сама подпись)
-    from PIL import ImageOps
-    gray = img.convert("L")
-    inverted = ImageOps.invert(gray)   # белое → 0, подпись → >0
-    bbox = inverted.getbbox()
-    return img.crop(bbox) if bbox else img
 
 
 def _split_rgba_png(img: Image.Image) -> tuple[bytes, bytes | None]:

@@ -133,14 +133,51 @@ def _merge_rects(rect_a, rect_b):
     )
 
 
+def _expand_line_bbox(match_bbox, page_words, tolerance_y: float = 3.0, max_gap: float = 20.0):
+    """Расширить bbox до НЕПРЕРЫВНОЙ строки (для точечных/подчёркнутых линий).
+
+    PyMuPDF дробит длинную линию '.....' / '_____' на несколько 'слов'; первое
+    может быть шириной ~3pt → подпись садится в узкий прямоугольник. Соединяем
+    соседние слова на той же y, но НЕ перепрыгиваем большие разрывы (max_gap) —
+    защита от склейки колонок в dual_column документах через гутер.
+    """
+    x0, y0, x1, y1 = match_bbox
+    y_center = (y0 + y1) / 2
+    same_line = sorted(
+        (w for w in page_words
+         if abs((w.bbox[1] + w.bbox[3]) / 2 - y_center) <= tolerance_y),
+        key=lambda w: w.bbox[0],
+    )
+    if not same_line:
+        return [x0, y0, x1, y1]
+
+    nx0, ny0, nx1, ny1 = x0, y0, x1, y1
+    for w in same_line:
+        wx0, wy0, wx1, wy1 = w.bbox
+        # Поглощаем слово только если оно примыкает к текущему боксу (непрерывный
+        # ряд), не перепрыгивая через разрыв шире max_gap.
+        if wx0 <= nx1 + max_gap and wx1 >= nx0 - max_gap:
+            nx0 = min(nx0, wx0); ny0 = min(ny0, wy0)
+            nx1 = max(nx1, wx1); ny1 = max(ny1, wy1)
+    return [nx0, ny0, nx1, ny1]
+
+
 def _find_signature_bbox(page, matched_text: str) -> list:
     rects = page.search_for(matched_text)
     if rects:
         return rects
-    has_underline = "___" in matched_text or "__" in matched_text
+    # has_underline: underscores OR 5+ consecutive dots (dot-line signature)
+    has_underline = bool(re.search(r'_{2,}|\.{5,}', matched_text))
     anchor_words = _extract_anchor_words(matched_text)
+
+    def _get_line_rects():
+        lr = page.search_for("___")
+        if not lr:
+            lr = page.search_for(".....")
+        return lr
+
     if has_underline and not anchor_words:
-        line_rects = page.search_for("___")
+        line_rects = _get_line_rects()
         return line_rects[:1] if line_rects else []
     if not has_underline and anchor_words:
         return page.search_for(anchor_words[0])[:1]
@@ -150,7 +187,7 @@ def _find_signature_bbox(page, matched_text: str) -> list:
             found = page.search_for(w)
             if found:
                 anchor_rects.extend(found)
-        line_rects = page.search_for("___")
+        line_rects = _get_line_rects()
         if not anchor_rects:
             return line_rects[:1] if line_rects else []
         if not line_rects:
@@ -166,12 +203,34 @@ def _find_signature_bbox(page, matched_text: str) -> list:
                 if u.x1 <= a.x0: return a.x0 - u.x1
                 return 0.0
             nearest = min(same_line_lines, key=dist_to_anchor)
+            # Clip line to anchor's x-column: prevents full-width rect in dual-column docs
+            if a.x0 > nearest.x0 + 50:
+                nearest = fitz.Rect(a.x0 - 5, nearest.y0, nearest.x1, nearest.y1)
             merged = _merge_rects(a, nearest)
             key = (round(merged.x0, 1), round(merged.y0, 1),
                    round(merged.x1, 1), round(merged.y1, 1))
             if key not in seen_keys:
                 seen_keys.add(key)
                 result.append(merged)
+        # Column-proximity fallback: reverse patterns where line is on different row than
+        # role/company text (e.g. ".......↵Innowise"). Find nearest line in anchor's column.
+        if not result:
+            for a in anchor_rects:
+                col_lines_clipped = []
+                for cl in line_rects:
+                    if cl.x0 <= a.x0 + 50 and cl.x1 >= a.x0 - 20:
+                        clipped = fitz.Rect(max(cl.x0, a.x0 - 10), cl.y0, cl.x1, cl.y1)
+                        if not clipped.is_empty:
+                            col_lines_clipped.append(clipped)
+                if col_lines_clipped:
+                    nearest = min(col_lines_clipped,
+                                  key=lambda u: abs((u.y0 + u.y1) / 2 - (a.y0 + a.y1) / 2))
+                    key = (round(nearest.x0, 1), round(nearest.y0, 1),
+                           round(nearest.x1, 1), round(nearest.y1, 1))
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        result.append(nearest)
+                    break
         if result:
             return result
     if anchor_words:
@@ -346,11 +405,21 @@ def find_signatures(doc: ParsedDocument, party: dict) -> list[SignMatch]:
                         if any(alias.lower() in matched_text.lower() for alias in other_aliases):
                             continue
                     rects = _find_signature_bbox(page, matched_text)
+                    # Для точечных/подчёркнутых линий PyMuPDF даёт узкий первый
+                    # сегмент (~3pt). Расширяем bbox до всей непрерывной линии.
+                    expand_line = bool(re.search(r'\\\.\{5|_\{3', pattern_str))
                     for rect in rects:
                         if (rect.y1 - rect.y0) > MAX_BBOX_HEIGHT_PT:
                             continue
                         if not _bbox_contains_signature_line(page, rect):
                             continue
+                        if expand_line:
+                            rect = fitz.Rect(_expand_line_bbox(
+                                (rect.x0, rect.y0, rect.x1, rect.y1),
+                                parsed_page.words,
+                            ))
+                            if (rect.y1 - rect.y0) > MAX_BBOX_HEIGHT_PT:
+                                continue
                         counter += 1
                         start = max(0, m.start() - 40)
                         end = min(len(text), m.end() + 40)
