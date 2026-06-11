@@ -798,14 +798,23 @@ def run_pipeline_auto_1(
 
     debug["step5_matches_count"] = len(matches)
 
-    # Пост-фильтр: оставить только матчи рядом с нашей стороной.
-    # signer_pats доверенные — уже заякорены на ФИО подписанта, не фильтруем.
-    if our_side:
+    # Фильтр по нашей стороне — ТОЛЬКО для dual_column_vertical.
+    # Цель: убрать ложные блоки КЛИЕНТА когда на одной странице два похожих блока.
+    # Для single_column не нужен: step3 уже нашёл нашу сторону, паттерны корректны.
+    if our_side and getattr(doc, "layout", "single_column") == "dual_column_vertical":
         matches = _filter_by_our_side_context(
             matches, [p.text for p in doc.pages], our_side,
             trusted_patterns=set(signer_pats),
         )
-        debug["our_side_filter"] = {"anchors_after_filter": len(matches)}
+        debug["our_side_filter"] = {
+            "applied": True,
+            "anchors_after_filter": len(matches),
+        }
+    else:
+        debug["our_side_filter"] = {
+            "applied": False,
+            "reason": "single_column — filter skipped",
+        }
 
     if not matches:
         return PipelineResult(
