@@ -238,6 +238,42 @@ def _find_signature_bbox(page, matched_text: str) -> list:
     return []
 
 
+MIN_SIG_WIDTH_PT = 12.0  # уже = битый фрагмент линии (PyMuPDF дробит '.....'), не подпись
+
+
+def _keep_trailing_anchor_column(page, matched_text: str, rects: list) -> list:
+    """Оставить rect'ы в колонке ХВОСТОВОГО якоря (названия стороны).
+
+    Для паттернов «линия → название» (reverse-dot `\\.{5,}…Innowise`,
+    docusign `\\tN\\…Innowise`) релевантна колонка названия, стоящего в конце
+    matched_text. `_extract_anchor_words` возвращает и служебный DocuSign-текст
+    ('Place, date', 'vor Versand aufheben' — слева у тега), из-за чего возникает
+    ложный rect в чужой колонке. Берём последнее значимое слово (≈ название) и
+    отбрасываем rect'ы не из его колонки.
+    """
+    if len(rects) <= 1:
+        return rects
+    words = _extract_anchor_words(matched_text)
+    if not words:
+        return rects
+    tail_word = words[-1]
+    anchor_rects = page.search_for(tail_word)
+    if not anchor_rects:
+        return rects
+    kept = []
+    for r in rects:
+        rc = (r.x0 + r.x1) / 2
+        ryc = (r.y0 + r.y1) / 2
+        for ar in anchor_rects:
+            if abs((ar.y0 + ar.y1) / 2 - ryc) > 200:  # только близкие по вертикали
+                continue
+            x_overlap = min(ar.x1, r.x1) > max(ar.x0, r.x0)
+            if x_overlap or abs((ar.x0 + ar.x1) / 2 - rc) < 120:
+                kept.append(r)
+                break
+    return kept or rects
+
+
 _DISQUALIFYING_ROLE_WORDS = {
     "руководитель", "руководителя", "руководителю", "руководителем",
     "начальник", "начальника", "начальнику", "начальником",
@@ -405,6 +441,17 @@ def find_signatures(doc: ParsedDocument, party: dict) -> list[SignMatch]:
                         if any(alias.lower() in matched_text.lower() for alias in other_aliases):
                             continue
                     rects = _find_signature_bbox(page, matched_text)
+                    # Паттерны «линия → название» (reverse-dot, docusign-tab): название
+                    # стороны в конце. Отбрасываем rect'ы из чужих колонок (ложный левый
+                    # матч от служебного DocuSign-текста 'Place, date / vor Versand aufheben').
+                    trailing_anchor = (
+                        pattern_str.startswith("\\.")
+                        or pattern_str.startswith("\\\\t")
+                        or pattern_str.startswith("\\\\s")
+                        or pattern_str.startswith("\\\\e")
+                    )
+                    if trailing_anchor:
+                        rects = _keep_trailing_anchor_column(page, matched_text, rects)
                     # Для точечных/подчёркнутых линий PyMuPDF даёт узкий первый
                     # сегмент (~3pt). Расширяем bbox до всей непрерывной линии.
                     expand_line = bool(re.search(r'\\\.\{5|_\{3', pattern_str))
@@ -420,6 +467,9 @@ def find_signatures(doc: ParsedDocument, party: dict) -> list[SignMatch]:
                             ))
                             if (rect.y1 - rect.y0) > MAX_BBOX_HEIGHT_PT:
                                 continue
+                        # Битый фрагмент линии (~3pt) — не место подписи.
+                        if (rect.x1 - rect.x0) < MIN_SIG_WIDTH_PT:
+                            continue
                         counter += 1
                         start = max(0, m.start() - 40)
                         end = min(len(text), m.end() + 40)

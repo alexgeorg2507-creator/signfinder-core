@@ -655,6 +655,36 @@ def _filter_by_our_side_context(
     return result
 
 
+def _drop_marker_only_when_signer_present(matches: list, signer_pat_set: "set[str]") -> list:
+    """Убрать company/marker-only матчи из колонки, где есть signer-anchored матч.
+
+    Имя подписанта (паттерн `_{3,}…Фамилия`) однозначно наше. Маркер ('ОВЛАСТЕНО
+    ЛИЦЕ', 'УПРАВИТЕЛ', и т.п.) может принадлежать ДРУГОЙ стороне (в двуязычном
+    блоке подписи клиент и мы используют разные маркеры в одной колонке).
+
+    Если в той же колонке (X-перекрытие) на той же странице есть матч, заякоренный
+    на ФИО нашего подписанта — marker/company-only матч этой колонки удаляется.
+    Это снимает ложную подпись на строке клиента ('ДОО … ОВЛАСТЕНО ЛИЦЕ ___').
+    """
+    if not signer_pat_set or not matches:
+        return matches
+    result = []
+    for m in matches:
+        if getattr(m, "pattern", "") in signer_pat_set:
+            result.append(m)
+            continue
+        m_x0, m_x1 = m.bbox[0], m.bbox[2]
+        shadowed = any(
+            getattr(o, "pattern", "") in signer_pat_set
+            and o.page == m.page
+            and min(o.bbox[2], m_x1) > max(o.bbox[0], m_x0)  # X-перекрытие = одна колонка
+            for o in matches
+        )
+        if not shadowed:
+            result.append(m)
+    return result
+
+
 def _cluster_signature_blocks(
     matches: list,
     aliases_ordered: list[str],
@@ -878,6 +908,16 @@ def run_pipeline_auto_1(
             patterns=patterns,
             debug=debug,
         )
+
+    # Приоритет ФИО подписанта: в колонке, где есть матч заякоренный на нашем
+    # подписанте, убираем company/marker-only матчи (маркер мог принадлежать
+    # клиенту — 'ДОО … ОВЛАСТЕНО ЛИЦЕ ___' в двуязычном блоке).
+    before_signer_pref = len(matches)
+    matches = _drop_marker_only_when_signer_present(matches, set(signer_pats))
+    debug["signer_priority_drop"] = {
+        "before": before_signer_pref,
+        "after": len(matches),
+    }
 
     # Кластеризация блоков подписи + выбор по приоритету синонима.
     # Якоря в вертикальном радиусе ~60pt с X-перекрытием = ОДИН блок = ОДНА подпись.

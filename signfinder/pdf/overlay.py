@@ -149,14 +149,22 @@ def _find_underscore_anchor(page, bbox, pattern: str, above_line: bool = False):
         words = page.get_text("words")  # (x0,y0,x1,y1,text,...)
         ds_tags = [w for w in words if re.match(r'\\[tse]\d+\\', w[4])]  # t/s/e, НЕ d/a
         if ds_tags:
+            # Тег должен быть в ТОЙ ЖЕ колонке, что и якорь (X-близость), иначе
+            # правый матч в двухколоночном подвале прыгнул бы на левый тег.
+            bbox_xc = (x0 + x1) / 2
+            col_tol = max(80.0, x1 - x0)  # допуск по X = ширина якоря, мин 80pt
             best_tag = None
-            best_d = float("inf")
+            best_score = float("inf")
             for w in ds_tags:
+                tag_xc = (w[0] + w[2]) / 2
                 tag_yc = (w[1] + w[3]) / 2
                 dy = abs(tag_yc - y_center)
-                if dy < best_d and dy < 150:  # ближайший по y тег в окне 150pt
-                    best_d = dy
-                    best_tag = w
+                dx = abs(tag_xc - bbox_xc)
+                if dy < 150 and dx <= col_tol:  # та же колонка, окно 150pt по y
+                    score = dy + dx
+                    if score < best_score:
+                        best_score = score
+                        best_tag = w
             if best_tag is not None:
                 tag_y = best_tag[1] if above_line else best_tag[3]
                 return best_tag[0], tag_y, (best_tag[3] - best_tag[1])
