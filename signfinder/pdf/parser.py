@@ -118,6 +118,7 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str) -> ParsedDocument:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages = []
     full_text_parts = []
+    cached_col_langs: tuple[str, str] | None = None  # кэш языков колонок по первой dual-стр.
 
     for page_num, page in enumerate(doc):
         words_raw = page.get_text("words")
@@ -130,14 +131,20 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str) -> ParsedDocument:
             right_text = _build_column_text(words_raw, x_min=gutter)
             page_text = left_text + "\n---\n" + right_text
 
-            try:
-                lang_left = _detect(left_text[:500]) if left_text.strip() else "unknown"
-            except Exception:
-                lang_left = "unknown"
-            try:
-                lang_right = _detect(right_text[:500]) if right_text.strip() else "unknown"
-            except Exception:
-                lang_right = "unknown"
+            if cached_col_langs is None:
+                # Первая dual-страница — детектируем и кэшируем
+                try:
+                    lang_left = _detect(left_text[:500]) if left_text.strip() else "unknown"
+                except Exception:
+                    lang_left = "unknown"
+                try:
+                    lang_right = _detect(right_text[:500]) if right_text.strip() else "unknown"
+                except Exception:
+                    lang_right = "unknown"
+                cached_col_langs = (lang_left, lang_right)
+            else:
+                lang_left, lang_right = cached_col_langs
+
             page_langs = list(dict.fromkeys([lang_left, lang_right]))
             p_layout = "dual_column_vertical"
         else:
