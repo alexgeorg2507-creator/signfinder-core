@@ -7,10 +7,36 @@
 from __future__ import annotations
 
 import sys
+import time as _time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from signfinder.storage.base import StorageBackend
+
+# ── TTL-кэш для markers и signer profiles ─────────────────────────────────────
+# Снижает число read_json с диска: за один analyze() load_markers зовётся 3-5×
+# для разных языков, load_signer_profile_by_id — 2-3×. TTL=60с: изменения через
+# UI применяются не позднее чем через минуту.
+
+_CACHE: dict[str, tuple[float, Any]] = {}
+_TTL = 60.0  # секунды
+
+
+def _cached(key: str, loader):
+    now = _time.monotonic()
+    entry = _CACHE.get(key)
+    if entry is not None and now - entry[0] < _TTL:
+        return entry[1]
+    result = loader()
+    _CACHE[key] = (now, result)
+    return result
+
+
+def _cache_invalidate(prefix: str) -> None:
+    """Сбросить записи кэша с данным префиксом. Вызывается при PUT/PATCH."""
+    for k in list(_CACHE.keys()):
+        if k.startswith(prefix):
+            del _CACHE[k]
 
 _MARKERS_FILE = "markers.json"
 _SIGNER_PROFILE_FILE = "signer_profile.json"
@@ -53,16 +79,21 @@ MARKERS_DEFAULTS: dict = {
 
 
 def load_markers(storage: Optional[StorageBackend]) -> dict:
-    """Загрузить маркеры из storage. Fallback на defaults."""
+    """Загрузить маркеры из storage. Fallback на defaults. Результат кэшируется TTL=60с."""
     if storage is None:
         return dict(MARKERS_DEFAULTS)
-    try:
-        data = storage.read_json(_MARKERS_FILE)
-        if data:
-            return data
-    except Exception as e:
-        sys.stderr.write(f"[settings] load_markers error: {e}\n")
-    return dict(MARKERS_DEFAULTS)
+    key = f"markers:{id(storage)}"
+
+    def _load():
+        try:
+            data = storage.read_json(_MARKERS_FILE)
+            if data:
+                return data
+        except Exception as e:
+            sys.stderr.write(f"[settings] load_markers error: {e}\n")
+        return dict(MARKERS_DEFAULTS)
+
+    return _cached(key, _load)
 
 
 def save_markers(storage: StorageBackend, markers: dict) -> None:
@@ -200,17 +231,23 @@ def list_signer_profiles(storage: Optional[StorageBackend]) -> list[dict]:
 
 
 def load_signer_profile_by_id(storage: Optional[StorageBackend], signer_id: str) -> dict:
-    """Профиль по id. Fallback на legacy signer_profile.json (корень) для 'default'."""
-    if storage is not None:
-        data = storage.read_json(f"{_SIGNERS_PREFIX}{signer_id}/profile.json")
-        if data:
-            data.setdefault("id", signer_id)
-            return data
-    if signer_id == "default":
-        legacy = load_signer_profile(storage)
-        legacy.setdefault("id", "default")
-        return legacy
-    return {"id": signer_id, "company_aliases": [], "signer_aliases": [], "match_markers": []}
+    """Профиль по id. Fallback на legacy signer_profile.json (корень) для 'default'.
+    Результат кэшируется TTL=60с."""
+    key = f"profile:{id(storage)}:{signer_id}"
+
+    def _load():
+        if storage is not None:
+            data = storage.read_json(f"{_SIGNERS_PREFIX}{signer_id}/profile.json")
+            if data:
+                data.setdefault("id", signer_id)
+                return data
+        if signer_id == "default":
+            legacy = load_signer_profile(storage)
+            legacy.setdefault("id", "default")
+            return legacy
+        return {"id": signer_id, "company_aliases": [], "signer_aliases": [], "match_markers": []}
+
+    return _cached(key, _load)
 
 
 def detect_signer_profile(

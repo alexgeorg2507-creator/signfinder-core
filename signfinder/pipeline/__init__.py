@@ -32,6 +32,7 @@ from signfinder.pipeline.pattern_extractor import (
     regenerate_from_raw_text,
 )
 from signfinder.pipeline.settings import (
+    _cache_invalidate,
     detect_signer_profile,
     get_aliases_for_language,
     get_markers_for_language,
@@ -79,4 +80,6 @@ __all__ = [
     "list_signer_profiles",
     "load_signer_profile_by_id",
     "detect_signer_profile",
+    # Cache management
+    "_cache_invalidate",
 ]
