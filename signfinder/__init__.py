@@ -74,7 +74,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.18.24"
+__version__ = "1.19.0"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -130,6 +130,7 @@ class SignFinder:
         filename: str = "document.pdf",
     ) -> "AnalysisResult":
         import fitz
+        import time
 
         if not pdf_bytes or len(pdf_bytes) < 4:
             return AnalysisResult(
@@ -137,37 +138,54 @@ class SignFinder:
                 error="pdf_bytes пустой или слишком маленький — невалидный PDF",
             )
 
+        t0 = time.perf_counter()
+        timings: dict[str, Any] = {}
+
+        t_parse = time.perf_counter()
         doc = parse_pdf_bytes(pdf_bytes, filename=filename)
+        timings["parse_ms"] = int((time.perf_counter() - t_parse) * 1000)
+        timings["langdetect_calls"] = getattr(doc, "_langdetect_calls", 0)
+
+        t_lang = time.perf_counter()
         lang = language or detect_language(doc, llm=self.llm)
         if not lang or lang == "unknown":
             lang = "ru"
+        timings["detect_lang_ms"] = int((time.perf_counter() - t_lang) * 1000)
+        timings["detect_lang_llm_used"] = timings["detect_lang_ms"] > 200
 
         try:
             fitz_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         except Exception as e:
+            timings["total_ms"] = int((time.perf_counter() - t0) * 1000)
             return AnalysisResult(
                 traffic_light="no_match",
                 error=f"Не удалось открыть PDF в fitz: {e}",
+                pipeline_debug={"timings_ms": timings},
             )
 
         fp = None
         try:
+            t_matcher = time.perf_counter()
             fp = compute_fingerprint(fitz_doc, lang)
             matcher = find_matching_templates(
                 fitz_doc, lang,
                 storage=self.storage,
                 fingerprint=fp,
             )
+            timings["matcher_ms"] = int((time.perf_counter() - t_matcher) * 1000)
         except Exception as e:
+            timings["total_ms"] = int((time.perf_counter() - t0) * 1000)
             return AnalysisResult(
                 traffic_light="no_match",
                 error=f"Matcher error: {e}",
                 fingerprint=fp,
+                pipeline_debug={"timings_ms": timings},
             )
         finally:
             fitz_doc.close()
 
         # Автоопределение профиля подписанта (Модель Б): по тексту первой+последней стр.
+        t_profile = time.perf_counter()
         doc_text_for_detect = ""
         pages = doc.pages
         if pages:
@@ -175,6 +193,7 @@ class SignFinder:
             if len(pages) > 1:
                 doc_text_for_detect += "\n" + (pages[-1].text or "")
         detected_signer_id = detect_signer_profile(self.storage, doc_text_for_detect)
+        timings["detect_signer_profile_ms"] = int((time.perf_counter() - t_profile) * 1000)
 
         if matcher.traffic_light == "green" and matcher.best_match:
             tpl = load_template(self.storage, matcher.best_match.template_id)
@@ -185,6 +204,8 @@ class SignFinder:
                         update_usage_stats(self.storage, matcher.best_match.template_id, "applied")
                     except Exception:
                         pass
+                    timings["total_ms"] = int((time.perf_counter() - t0) * 1000)
+                    timings["path"] = "template"
                     return AnalysisResult(
                         traffic_light="green",
                         matcher_result=matcher,
@@ -193,8 +214,10 @@ class SignFinder:
                         anchors=tpl_anchors,
                         fingerprint=fp,
                         detected_signer_id=detected_signer_id,
+                        pipeline_debug={"timings_ms": timings},
                     )
 
+        t_pipeline = time.perf_counter()
         pipeline = run_pipeline_auto_1(
             doc=doc,
             language=lang,
@@ -202,13 +225,19 @@ class SignFinder:
             llm=self.llm,
             signer_id=detected_signer_id,
         )
+        timings["pipeline_ms"] = int((time.perf_counter() - t_pipeline) * 1000)
+        timings["total_ms"] = int((time.perf_counter() - t0) * 1000)
+        timings["path"] = "pipeline"
+
+        debug = dict(pipeline.debug) if pipeline.debug else {}
+        debug["timings_ms"] = timings
 
         if not pipeline.ok:
             return AnalysisResult(
                 traffic_light=matcher.traffic_light,
                 matcher_result=matcher,
                 error=pipeline.error,
-                pipeline_debug=pipeline.debug,
+                pipeline_debug=debug,
                 fingerprint=fp,
                 detected_signer_id=detected_signer_id,
             )
@@ -219,7 +248,7 @@ class SignFinder:
             anchors=pipeline.anchors,
             matches=pipeline.matches,
             our_side=pipeline.our_side,
-            pipeline_debug=pipeline.debug,
+            pipeline_debug=debug,
             fingerprint=fp,
             detected_signer_id=detected_signer_id,
         )

@@ -37,6 +37,7 @@ class ParsedDocument:
     gutter_x: float | None = None
     pages: list = field(default_factory=list)
     pdf_bytes: bytes = b""
+    _langdetect_calls: int = 0             # служебное поле для профилирования (v1.19)
 
 
 def _detect_gutter(words_raw: list, page_width: float) -> float | None:
@@ -106,7 +107,13 @@ def docx_to_pdf(docx_bytes: bytes) -> bytes:
 
 def parse_pdf_bytes(pdf_bytes: bytes, filename: str) -> ParsedDocument:
     """Парсинг PDF — текст и слова с координатами. Детектирует двухколоночный layout."""
-    from langdetect import detect as _detect
+    from langdetect import detect as _detect_raw
+
+    langdetect_calls = [0]
+
+    def _detect(text: str) -> str:
+        langdetect_calls[0] += 1
+        return _detect_raw(text)
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages = []
@@ -176,6 +183,7 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str) -> ParsedDocument:
         gutter_x=doc_gutter,
         pages=pages,
         pdf_bytes=pdf_bytes,
+        _langdetect_calls=langdetect_calls[0],
     )
 
 
