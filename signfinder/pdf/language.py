@@ -16,6 +16,20 @@ from signfinder.llm.base import LLMClient, LLMError
 SUPPORTED = ("ru", "en", "pl", "mk")
 
 
+def detect_language_fast(doc) -> str:
+    """Быстрая детекция БЕЗ LLM. Для шаблонного пути.
+
+    Возвращает 2-буквенный код от langdetect как есть. Если langdetect вернул
+    'bg'/'hr'/'sl' (каша двуязычного документа) — отдаём как есть: matcher
+    матчит шаблоны по fingerprint (simhash/jaccard), а не по строке языка.
+    Для шаблонного пути LLM-точность не нужна — это экономит 2-3 сек.
+
+    Возвращает 'unknown' если parser не определил язык.
+    """
+    parser_lang = (getattr(doc, "language", "") or "").lower()[:2]
+    return parser_lang if parser_lang else "unknown"
+
+
 def detect_language(doc, llm: Optional[LLMClient] = None) -> str:
     """Возвращает 'ru' / 'en' / 'pl' / 'unknown'.
 

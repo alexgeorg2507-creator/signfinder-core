@@ -45,6 +45,7 @@ from signfinder.pdf import (
     ParsedDocument,
     apply_signature,
     detect_language,
+    detect_language_fast,
     parse_document,
     parse_pdf_bytes,
     render_page_with_highlights,
@@ -74,7 +75,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.19.0"
+__version__ = "1.19.1"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -146,12 +147,14 @@ class SignFinder:
         timings["parse_ms"] = int((time.perf_counter() - t_parse) * 1000)
         timings["langdetect_calls"] = getattr(doc, "_langdetect_calls", 0)
 
-        t_lang = time.perf_counter()
-        lang = language or detect_language(doc, llm=self.llm)
-        if not lang or lang == "unknown":
-            lang = "ru"
-        timings["detect_lang_ms"] = int((time.perf_counter() - t_lang) * 1000)
-        timings["detect_lang_llm_used"] = timings["detect_lang_ms"] > 200
+        # БЫСТРАЯ детекция — для matcher достаточно языковой метки (fingerprint
+        # матчит по simhash/jaccard, не по строке языка). LLM-fallback откладываем
+        # до момента, когда станет ясно что идём в полный pipeline.
+        t_lang_fast = time.perf_counter()
+        lang_fast = language or detect_language_fast(doc)
+        if not lang_fast or lang_fast == "unknown":
+            lang_fast = "ru"
+        timings["detect_lang_fast_ms"] = int((time.perf_counter() - t_lang_fast) * 1000)
 
         try:
             fitz_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -166,9 +169,9 @@ class SignFinder:
         fp = None
         try:
             t_matcher = time.perf_counter()
-            fp = compute_fingerprint(fitz_doc, lang)
+            fp = compute_fingerprint(fitz_doc, lang_fast)
             matcher = find_matching_templates(
-                fitz_doc, lang,
+                fitz_doc, lang_fast,
                 storage=self.storage,
                 fingerprint=fp,
             )
@@ -195,15 +198,17 @@ class SignFinder:
         detected_signer_id = detect_signer_profile(self.storage, doc_text_for_detect)
         timings["detect_signer_profile_ms"] = int((time.perf_counter() - t_profile) * 1000)
 
+        # ШАБЛОННЫЙ ПУТЬ: выходим БЕЗ LLM-вызова detect_language
         if matcher.traffic_light == "green" and matcher.best_match:
             tpl = load_template(self.storage, matcher.best_match.template_id)
             if tpl is not None:
-                tpl_matches, tpl_anchors = apply_template_to_doc(doc, tpl, lang)
+                tpl_matches, tpl_anchors = apply_template_to_doc(doc, tpl, lang_fast)
                 if tpl_anchors:
                     try:
                         update_usage_stats(self.storage, matcher.best_match.template_id, "applied")
                     except Exception:
                         pass
+                    timings["detect_lang_llm_used"] = False
                     timings["total_ms"] = int((time.perf_counter() - t0) * 1000)
                     timings["path"] = "template"
                     return AnalysisResult(
@@ -216,6 +221,14 @@ class SignFinder:
                         detected_signer_id=detected_signer_id,
                         pipeline_debug={"timings_ms": timings},
                     )
+
+        # ПОЛНЫЙ ПАЙПЛАЙН — точная детекция с LLM-fallback при необходимости.
+        t_lang = time.perf_counter()
+        lang = language or detect_language(doc, llm=self.llm)
+        if not lang or lang == "unknown":
+            lang = lang_fast  # fallback на быстрый результат, а не на "ru"
+        timings["detect_lang_ms"] = int((time.perf_counter() - t_lang) * 1000)
+        timings["detect_lang_llm_used"] = timings["detect_lang_ms"] > 200
 
         t_pipeline = time.perf_counter()
         pipeline = run_pipeline_auto_1(

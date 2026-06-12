@@ -1,5 +1,5 @@
 """PDF/DOCX обработка: парсинг, наложение подписи, рендер превью, детекция языка."""
-from signfinder.pdf.language import detect_language
+from signfinder.pdf.language import detect_language, detect_language_fast
 from signfinder.pdf.overlay import apply_signature
 from signfinder.pdf.parser import (
     ParsedDocument,
@@ -21,4 +21,5 @@ __all__ = [
     "apply_signature",
     "render_page_with_highlights",
     "detect_language",
+    "detect_language_fast",
 ]
