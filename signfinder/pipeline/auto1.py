@@ -109,6 +109,25 @@ def _get_header_text(doc: ParsedDocument) -> str:
     return "\n".join(parts)[:4000]
 
 
+def _deduplicate_patterns(patterns: list[str], max_count: int = 20) -> list[str]:
+    """Убрать семантические дубли и ограничить число паттернов.
+
+    Нормализация: убираем пробелы и приводим к нижнему регистру для сравнения —
+    паттерны отличающиеся только капитализацией или пробелами считаются дублями.
+    Порядок сохраняется (первый вариант побеждает).
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for p in patterns:
+        norm = re.sub(r"\s+", "", p.lower())
+        if norm not in seen:
+            seen.add(norm)
+            result.append(p)
+        if len(result) >= max_count:
+            break
+    return result
+
+
 def _get_strategic_fragments(doc: ParsedDocument, markers_block: dict) -> str:
     pages = doc.pages
     n = len(pages)
@@ -819,6 +838,8 @@ def run_pipeline_auto_1(
         except re.error:
             sys.stderr.write(f"[auto1] bad normalized pattern '{np}'\n")
     debug["patterns_crossline_normalized"] = norm_count
+    normalized_llm = _deduplicate_patterns(normalized_llm, max_count=20)
+    debug["patterns_after_dedup"] = len(normalized_llm)
 
     # Структурные паттерны из markers (name-independent, '_{3,} (...)')
     markers_block = effective_markers
