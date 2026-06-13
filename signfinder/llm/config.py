@@ -1,4 +1,9 @@
-"""Чтение/запись llm_config.json + fallback на env vars."""
+"""Чтение/запись llm_config.json.
+
+LLM-провайдер и ключи настраиваются ТОЛЬКО через интерфейс (Настройки → LLM),
+которые сохраняются в llm_config.json. Env vars для LLM не используются —
+это исключает случайное использование старых ключей из .env.
+"""
 from __future__ import annotations
 
 import json
@@ -14,13 +19,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "deepseek":  {"api_key": ""},
         "gemini":    {"api_key": ""},
     },
-}
-
-_ENV_KEY_MAP: dict[str, str] = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai":    "OPENAI_API_KEY",
-    "deepseek":  "DEEPSEEK_API_KEY",
-    "gemini":    "GEMINI_API_KEY",
 }
 
 SUPPORTED_PROVIDERS: list[str] = list(DEFAULT_CONFIG["providers"].keys())
@@ -59,53 +57,45 @@ def save_config(config: dict[str, Any]) -> None:
 
 
 def get_active_provider() -> str:
-    """
-    Приоритет: llm_config.json → env LLM_PROVIDER → RuntimeError.
-    Провайдер должен иметь непустой api_key.
+    """Читает активный провайдер из llm_config.json.
+
+    Env vars НЕ используются — провайдер настраивается только через UI.
+    Если провайдер не настроен — понятная ошибка с инструкцией.
     """
     config = load_config()
     provider = config.get("active_provider", "").strip().lower()
     if provider and _get_key_from_config(config, provider):
         return provider
 
-    # fallback: env
-    env_provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
-    if env_provider and os.environ.get(_ENV_KEY_MAP.get(env_provider, ""), "").strip():
-        return env_provider
-
     raise RuntimeError(
-        "LLM не настроен. Задай active_provider в llm_config.json "
-        "или переменные LLM_PROVIDER + <PROVIDER>_API_KEY."
+        "LLM-провайдер не настроен. "
+        "Откройте Настройки → LLM, выберите провайдера и введите API-ключ."
     )
 
 
 def get_api_key(provider: str) -> str:
-    """
-    Приоритет: llm_config.json → env var → RuntimeError.
+    """Читает API-ключ из llm_config.json.
+
+    Env vars НЕ используются — ключи настраиваются только через UI.
     """
     config = load_config()
     key = _get_key_from_config(config, provider)
     if key:
         return key
-    env_key = os.environ.get(_ENV_KEY_MAP.get(provider, ""), "").strip()
-    if env_key:
-        return env_key
-    raise RuntimeError(f"API key не настроен для провайдера: {provider}")
+    raise RuntimeError(
+        f"API-ключ не настроен для провайдера '{provider}'. "
+        f"Откройте Настройки → LLM и введите ключ."
+    )
 
 
 def configured_providers(config: dict[str, Any] | None = None) -> list[str]:
-    """Провайдеры с непустым api_key."""
+    """Провайдеры с непустым api_key в llm_config.json."""
     if config is None:
         config = load_config()
-    result = []
-    for p in SUPPORTED_PROVIDERS:
-        if _get_key_from_config(config, p):
-            result.append(p)
-    # also check env vars for providers not in config
-    for p in SUPPORTED_PROVIDERS:
-        if p not in result and os.environ.get(_ENV_KEY_MAP.get(p, ""), "").strip():
-            result.append(p)
-    return result
+    return [
+        p for p in SUPPORTED_PROVIDERS
+        if _get_key_from_config(config, p)
+    ]
 
 
 def mask_key(key: str) -> str:
