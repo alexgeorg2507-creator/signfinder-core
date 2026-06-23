@@ -1,5 +1,10 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.0:
+  - signfinder.review: pre-flight ревью договора через LLM (опционально)
+  - AnalysisResult.review, SignFinder.analyze(with_review=...), SignFinder.review()
+  - Динамический промпт под язык/юрисдикцию (ru/pl/en/mk), два светофора
+
 v1.16.0:
   - signfinder.intake: Protocol IntakeSource/IntakeSink, ImapSource, SmtpSink
   - build_processed_email helper для IMAP APPEND
@@ -61,6 +66,7 @@ from signfinder.pipeline import (
     validate_with_llm,
 )
 from signfinder.pipeline.dedup import dedup_anchors
+from signfinder.review import ReviewFinding, ReviewResult, review_contract
 from signfinder.storage import StorageBackend, create_storage
 from signfinder.templates import (
     DocumentTemplate,
@@ -75,7 +81,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.19.4"
+__version__ = "1.20.0"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -93,6 +99,7 @@ class AnalysisResult:
     pipeline_debug: dict = field(default_factory=dict)
     fingerprint: Optional[dict[str, Any]] = None
     detected_signer_id: Optional[str] = None
+    review: Optional[dict] = None   # результат pre-flight ревью (v1.20), None если не запрашивали
 
 
 # ── SignFinder facade ─────────────────────────────────────────────────────────
@@ -124,11 +131,30 @@ class SignFinder:
                     model=self.config.anthropic_model,
                 )
 
+    def _maybe_review(self, doc, language: str, with_review: bool) -> Optional[dict]:
+        """Выполнить pre-flight ревью если запрошено. Не падает при ошибке."""
+        if not with_review:
+            return None
+        try:
+            full_text = "\n".join(p.text for p in doc.pages)
+            page_count = len(doc.pages)
+            rev = review_contract(full_text, language, self.llm, page_count=page_count)
+            return rev.to_dict()
+        except Exception as e:
+            import sys
+            sys.stderr.write(f"[analyze] review failed: {e}\n")
+            return {"traffic_light": "yellow", "error": str(e), "findings": []}
+
+    def review(self, contract_text: str, language: str, page_count: int = 0) -> "ReviewResult":
+        """Pre-flight ревью договора напрямую. Независимо от поиска подписи."""
+        return review_contract(contract_text, language, self.llm, page_count=page_count)
+
     def analyze(
         self,
         pdf_bytes: bytes,
         language: Optional[str] = None,
         filename: str = "document.pdf",
+        with_review: bool = False,     # ← НОВОЕ: pre-flight ревью опционально
     ) -> "AnalysisResult":
         import fitz
         import time
@@ -211,6 +237,7 @@ class SignFinder:
                     timings["detect_lang_llm_used"] = False
                     timings["total_ms"] = int((time.perf_counter() - t0) * 1000)
                     timings["path"] = "template"
+                    review_dict = self._maybe_review(doc, lang_fast, with_review)
                     return AnalysisResult(
                         traffic_light="green",
                         matcher_result=matcher,
@@ -220,6 +247,7 @@ class SignFinder:
                         fingerprint=fp,
                         detected_signer_id=detected_signer_id,
                         pipeline_debug={"timings_ms": timings},
+                        review=review_dict,
                     )
 
         # ПОЛНЫЙ ПАЙПЛАЙН — точная детекция с LLM-fallback при необходимости.
@@ -255,6 +283,7 @@ class SignFinder:
                 detected_signer_id=detected_signer_id,
             )
 
+        review_dict = self._maybe_review(doc, lang, with_review)
         return AnalysisResult(
             traffic_light=matcher.traffic_light,
             matcher_result=matcher,
@@ -264,6 +293,7 @@ class SignFinder:
             pipeline_debug=debug,
             fingerprint=fp,
             detected_signer_id=detected_signer_id,
+            review=review_dict,
         )
 
     def sign(
@@ -334,4 +364,5 @@ __all__ = [
     "classify", "run_pipeline_auto_1", "PipelineResult", "apply_template_to_doc",
     "save_pipeline_template", "validate_with_llm", "dedup_anchors",
     "detect_signer_profile", "list_signer_profiles", "load_signer_profile_by_id",
+    "ReviewResult", "ReviewFinding", "review_contract",
 ]

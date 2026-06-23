@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 
 import fitz
@@ -49,3 +50,27 @@ def api_base_url() -> str:
 def api_headers() -> dict:
     key = os.environ.get("SIGNFINDER_API_KEY", "test-key")
     return {"Authorization": f"Bearer {key}"}
+
+
+@pytest.fixture
+def mock_llm_review():
+    class MockLLM:
+        def complete(self, prompt, max_tokens=1500, **kwargs):
+            return json.dumps({
+                "overall": "yellow",
+                "summary": "Договор корректен, есть замечания",
+                "findings": [
+                    {"axis": "term", "severity": "warning",
+                     "clause": "п.4.2", "note": "Срок действия не указан явно"}
+                ]
+            }, ensure_ascii=False)
+    return MockLLM()
+
+
+@pytest.fixture
+def mock_llm_error():
+    from signfinder.llm import LLMError
+    class MockLLM:
+        def complete(self, prompt, max_tokens=1500, **kwargs):
+            raise LLMError("simulated API failure")
+    return MockLLM()
