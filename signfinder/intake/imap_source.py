@@ -130,7 +130,19 @@ class ImapSource:
         assert self._imap is not None
 
         folder = self._quote(self._folder_in)
-        typ, _ = self._imap.select(folder)
+        try:
+            typ, _ = self._imap.select(folder)
+        except (imaplib.IMAP4.error, imaplib.IMAP4.abort) as e:
+            # Рассинхрон буфера (unexpected response от предыдущей команды) —
+            # сбросить соединение и переподключиться с чистого состояния.
+            logger.warning("IMAP SELECT %s рассинхрон (%s), переподключение", folder, e)
+            self._imap = None
+            self._connect()
+            try:
+                typ, _ = self._imap.select(folder)
+            except Exception as e2:
+                logger.error("IMAP SELECT %s failed после retry: %s", folder, e2)
+                return []
         if typ != "OK":
             logger.error("IMAP SELECT %s failed: %s", folder, typ)
             return []
@@ -244,19 +256,24 @@ class ImapSource:
     def _ensure_folder(self, folder: str) -> None:
         """Создаёт IMAP-папку/ярлык если не существует. Идемпотентно.
         БЕЗ SELECT — SELECT на Gmail даёт многословный ответ и ломает парсер imaplib.
+        Полностью читает ответ CREATE чтобы не оставить хвост в буфере imaplib.
         """
         assert self._imap is not None
         quoted = self._quote(folder)
         try:
             typ, data = self._imap.create(quoted)
+            # ответ прочитан в typ/data — буфер чист
             if typ == "OK":
                 logger.info("IMAP CREATE %s OK", folder)
             else:
                 # NO = папка/ярлык уже существует — это норма, не ошибка
                 logger.debug("IMAP CREATE %s: %s (вероятно уже есть)", folder, typ)
         except Exception as e:
-            # CREATE существующей папки может кинуть — не критично
+            # CREATE существующей папки может кинуть — не критично.
+            # При исключении соединение могло уйти в рассинхрон — сбросить,
+            # чтобы следующая операция переподключилась с чистого состояния.
             logger.debug("IMAP CREATE %s exception: %s (вероятно уже есть)", folder, e)
+            self._imap = None
 
     def _fetch_and_parse(self, uid: str) -> Optional[IntakeMessage]:
         assert self._imap is not None
