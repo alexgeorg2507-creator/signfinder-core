@@ -42,6 +42,46 @@ class ReviewResult:
             "truncated": self.truncated,
         }
 
+    def format_numbered(self, lang: str = "ru") -> str:
+        """Форматировать замечания нумерованным списком с разделами.
+
+        Раздел 1 «Замечания» (critical+warning), раздел 2 «Рекомендации» (info).
+        Двухуровневая нумерация 1.1, 1.2, 2.1...
+
+        Args:
+            lang: ru | en — язык заголовков разделов
+
+        Returns:
+            Готовый текстовый блок. Пустая строка если замечаний нет.
+        """
+        labels = {
+            "ru": {"remarks": "Замечания", "recs": "Рекомендации", "clause": "п."},
+            "en": {"remarks": "Remarks", "recs": "Recommendations", "clause": "clause"},
+        }
+        lab = labels.get(lang, labels["ru"])
+
+        remarks = [f for f in self.findings if f.severity in ("critical", "warning")]
+        recs = [f for f in self.findings if f.severity == "info"]
+
+        lines: list[str] = []
+
+        if remarks:
+            lines.append(f"1. {lab['remarks']}")
+            for i, f in enumerate(remarks, 1):
+                clause = f" ({lab['clause']} {f.clause})" if f.clause else ""
+                lines.append(f"1.{i}. {f.note}{clause}")
+
+        if recs:
+            if lines:
+                lines.append("")  # пустая строка между разделами
+            section_num = 2 if remarks else 1
+            lines.append(f"{section_num}. {lab['recs']}")
+            for i, f in enumerate(recs, 1):
+                clause = f" ({lab['clause']} {f.clause})" if f.clause else ""
+                lines.append(f"{section_num}.{i}. {f.note}{clause}")
+
+        return "\n".join(lines)
+
 
 # Лимит текста договора в промпт (символов). ~60K покрывает 25-30 страниц.
 _MAX_CONTRACT_CHARS = 60000

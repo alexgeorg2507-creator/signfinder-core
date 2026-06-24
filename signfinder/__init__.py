@@ -1,5 +1,8 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.5:
+  - ReviewResult.format_numbered(lang): нумерованный вывод (Замечания/Рекомендации)
+
 v1.20.0:
   - signfinder.review: pre-flight ревью договора через LLM (опционально)
   - AnalysisResult.review, SignFinder.analyze(with_review=...), SignFinder.review()
@@ -81,7 +84,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.0"
+__version__ = "1.20.5"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────

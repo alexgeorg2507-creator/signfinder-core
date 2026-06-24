@@ -67,3 +67,26 @@ def test_review_llm_error_returns_yellow(mock_llm_error):
     result = review_contract("Договор...", "ru", mock_llm_error)
     assert result.traffic_light == "yellow"
     assert result.error
+
+
+def test_format_numbered_two_sections():
+    from signfinder.review import ReviewResult, ReviewFinding
+    r = ReviewResult(traffic_light="yellow", findings=[
+        ReviewFinding(axis="term", severity="warning", note="Срок не указан", clause="4.2"),
+        ReviewFinding(axis="parties", severity="info", note="Уточнить реквизиты"),
+    ])
+    out = r.format_numbered("ru")
+    assert "1. Замечания" in out
+    assert "1.1." in out
+    assert "2. Рекомендации" in out
+    assert "2.1." in out
+
+
+def test_format_numbered_only_recommendations():
+    from signfinder.review import ReviewResult, ReviewFinding
+    r = ReviewResult(traffic_light="green", findings=[
+        ReviewFinding(axis="parties", severity="info", note="Совет"),
+    ])
+    out = r.format_numbered("ru")
+    assert "1. Рекомендации" in out   # рекомендации = раздел 1, нет замечаний
+    assert "2." not in out
