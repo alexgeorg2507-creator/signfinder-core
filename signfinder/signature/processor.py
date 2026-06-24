@@ -97,11 +97,15 @@ def process_signature(image_bytes: bytes) -> SignatureProcessResult:
         )
 
     bx, by, bw, bh = cv2.boundingRect(nonzero)
-    pad = 12
-    bx = max(0, bx - pad)
-    by = max(0, by - pad)
-    bw = min(input_w - bx, bw + 2 * pad)
-    bh = min(input_h - by, bh + 2 * pad)
+
+    # Пропорциональный паддинг: 2% от размера подписи, но не более 6px и не менее 2px.
+    # Фиксированный pad=12 давал большие поля у мелких подписей → удалённость от места.
+    pad_x = int(np.clip(bw * 0.02, 2, 6))
+    pad_y = int(np.clip(bh * 0.02, 2, 6))
+    bx = max(0, bx - pad_x)
+    by = max(0, by - pad_y)
+    bw = min(input_w - bx, bw + 2 * pad_x)
+    bh = min(input_h - by, bh + 2 * pad_y)
     bbox_original = (bx, by, bw, bh)
 
     # ── Шаг 5: Валидация ─────────────────────────────────────────────────────

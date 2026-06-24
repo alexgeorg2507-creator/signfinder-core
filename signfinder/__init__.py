@@ -1,5 +1,9 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.6:
+  - signature/processor.py: пропорциональный pad (2% bbox, [2..6]px) вместо фиксированного pad=12
+  - intake/imap_source.py: poll() retry SELECT при IMAP4.error; _ensure_folder() сброс при исключении
+
 v1.20.5:
   - ReviewResult.format_numbered(lang): нумерованный вывод (Замечания/Рекомендации)
 
@@ -84,7 +88,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.5"
+__version__ = "1.20.6"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
