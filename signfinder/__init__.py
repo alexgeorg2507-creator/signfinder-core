@@ -1,5 +1,11 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.7:
+  - pdf/overlay.py: подпись заходит за линию вниз (~15% высоты, до 6pt) — визуально
+    садится на линию, а не висит над ней
+  - pdf/overlay.py: _find_line_below() — DocuSign-теги (\\tN\\) ищут реальную линию
+    подписи ниже тега в той же колонке вместо фиксированного отступа
+
 v1.20.6:
   - signature/processor.py: пропорциональный pad (2% bbox, [2..6]px) вместо фиксированного pad=12
   - intake/imap_source.py: poll() retry SELECT при IMAP4.error; _ensure_folder() сброс при исключении
@@ -88,7 +94,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.6"
+__version__ = "1.20.7"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────

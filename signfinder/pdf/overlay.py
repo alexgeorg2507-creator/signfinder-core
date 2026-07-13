@@ -77,11 +77,13 @@ def apply_signature(
 
         # PNG подпись
         if use_signature and img_stream is not None:
+            # Лёгкий заход подписи за линию вниз (~15% высоты, не более 6pt)
+            descender = min(sig_h * 0.15, 6.0)
             sig_rect = fitz.Rect(
                 anchor_x,
-                anchor_y_bottom - sig_h,
+                anchor_y_bottom - sig_h + descender,
                 anchor_x + sig_w,
-                anchor_y_bottom,
+                anchor_y_bottom + descender,
             )
             page.insert_image(sig_rect, stream=img_stream, keep_proportion=True)
 
@@ -121,6 +123,48 @@ def _extract_literal_prefix(pattern: str) -> str:
             break
         result.append(ch)
     return ''.join(result).strip()
+
+
+def _find_line_below(page, x: float, y_from: float, x_tol: float = 80.0,
+                     y_max_gap: float = 60.0):
+    """Найти Y нижнего края ближайшей линии подписи ниже точки (x, y_from).
+
+    Ищет '___' и графические линии (drawings) в колонке x ± x_tol,
+    ниже y_from но не дальше y_max_gap. Возвращает y нижнего края линии или None.
+    """
+    candidates = []
+
+    # Текстовые подчёркивания
+    try:
+        for r in page.search_for("___"):
+            if r.y0 >= y_from - 2 and (r.y0 - y_from) <= y_max_gap:
+                rc = (r.x0 + r.x1) / 2
+                if abs(rc - x) <= x_tol or (r.x0 <= x <= r.x1):
+                    candidates.append(r.y1)
+    except Exception:
+        pass
+
+    # Графические линии (DocuSign рисует линии как vector drawings)
+    try:
+        for d in page.get_drawings():
+            rect = d.get("rect")
+            if rect is None:
+                continue
+            # тонкая горизонтальная линия: высота мала, ширина заметна
+            h = rect.y1 - rect.y0
+            w = rect.x1 - rect.x0
+            if h <= 3 and w >= 30:
+                if rect.y0 >= y_from - 2 and (rect.y0 - y_from) <= y_max_gap:
+                    rc = (rect.x0 + rect.x1) / 2
+                    if abs(rc - x) <= x_tol or (rect.x0 <= x <= rect.x1):
+                        candidates.append(rect.y1)
+    except Exception:
+        pass
+
+    if not candidates:
+        return None
+    # Ближайшая линия (минимальный y, т.е. сразу под тегом)
+    return min(candidates)
 
 
 def _find_underscore_anchor(page, bbox, pattern: str, above_line: bool = False):
@@ -166,8 +210,18 @@ def _find_underscore_anchor(page, bbox, pattern: str, above_line: bool = False):
                         best_score = score
                         best_tag = w
             if best_tag is not None:
-                tag_y = best_tag[1] if above_line else best_tag[3]
-                return best_tag[0], tag_y, (best_tag[3] - best_tag[1])
+                tag_x = best_tag[0]
+                tag_bottom = best_tag[3]
+                tag_h = best_tag[3] - best_tag[1]
+                # Тег — метка НАД линией подписи. Ищем реальную линию ниже тега
+                # в той же колонке, сажаем подпись на неё.
+                line_y = _find_line_below(page, tag_x, tag_bottom, x_tol=col_tol)
+                if line_y is not None:
+                    y_pos = (line_y - tag_h) if above_line else line_y
+                    return tag_x, y_pos, tag_h
+                # Линия не найдена — опустить подпись ниже тега на ~1.5 высоты тега
+                y_pos = (tag_bottom - tag_h) if above_line else tag_bottom + tag_h * 1.5
+                return tag_x, y_pos, tag_h
     except Exception:
         pass
 
