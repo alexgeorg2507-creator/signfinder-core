@@ -72,19 +72,27 @@ def apply_signature(
             continue
 
         page = doc[m.page]
-        anchor_x, anchor_y_bottom, _ = _find_underscore_anchor(page, m.bbox, m.pattern, above_line=sign_above_line)
         bbox = list(m.bbox)  # [x0, y0, x1, y1]
 
         # PNG подпись
         if use_signature and img_stream is not None:
-            # Лёгкий заход подписи за линию вниз (~15% высоты, не более 6pt)
-            descender = min(sig_h * 0.15, 6.0)
-            sig_rect = fitz.Rect(
-                anchor_x,
-                anchor_y_bottom - sig_h + descender,
-                anchor_x + sig_w,
-                anchor_y_bottom + descender,
-            )
+            if getattr(m, "added_by", "") == "manual_exact":
+                # Freeform-размещение (drag/resize в кабинете) — вставляем PNG буквально
+                # в переданный bbox: без текстового поиска линии и без общего scale,
+                # размер задаётся самим прямоугольником, а не sig_h/sig_w.
+                sig_rect = fitz.Rect(bbox[0], bbox[1], bbox[2], bbox[3])
+            else:
+                anchor_x, anchor_y_bottom, _ = _find_underscore_anchor(
+                    page, m.bbox, m.pattern, above_line=sign_above_line
+                )
+                # Лёгкий заход подписи за линию вниз (~15% высоты, не более 6pt)
+                descender = min(sig_h * 0.15, 6.0)
+                sig_rect = fitz.Rect(
+                    anchor_x,
+                    anchor_y_bottom - sig_h + descender,
+                    anchor_x + sig_w,
+                    anchor_y_bottom + descender,
+                )
             page.insert_image(sig_rect, stream=img_stream, keep_proportion=True)
 
         # Маркер: ~4×12мм прямоугольник на правом поле, выровнен по центру строки якоря

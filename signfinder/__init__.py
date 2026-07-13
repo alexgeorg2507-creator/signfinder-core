@@ -1,5 +1,10 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.8:
+  - pdf/overlay.py: SignMatch.added_by == "manual_exact" — freeform-размещение
+    подписи (drag/resize в кабинете) обходит текстовый поиск линии, PNG
+    вставляется буквально в переданный bbox (Fix-7, Phase B)
+
 v1.20.7:
   - pdf/overlay.py: подпись заходит за линию вниз (~15% высоты, до 6pt) — визуально
     садится на линию, а не висит над ней
@@ -94,7 +99,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.7"
+__version__ = "1.20.8"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
