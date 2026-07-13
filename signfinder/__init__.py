@@ -1,5 +1,9 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.9:
+  - pdf/overlay.py: bump signature descender 15%/6pt -> 45%/22pt so ink center
+    lands ON the underscore line instead of ~15pt above it (Fix-7 followup)
+
 v1.20.8:
   - pdf/overlay.py: SignMatch.added_by == "manual_exact" — freeform-размещение
     подписи (drag/resize в кабинете) обходит текстовый поиск линии, PNG
@@ -99,7 +103,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.8"
+__version__ = "1.20.9"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────

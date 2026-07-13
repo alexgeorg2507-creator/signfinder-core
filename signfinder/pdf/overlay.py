@@ -85,8 +85,12 @@ def apply_signature(
                 anchor_x, anchor_y_bottom, _ = _find_underscore_anchor(
                     page, m.bbox, m.pattern, above_line=sign_above_line
                 )
-                # Лёгкий заход подписи за линию вниз (~15% высоты, не более 6pt)
-                descender = min(sig_h * 0.15, 6.0)
+                # Подпись садится ЦЕНТРОМ ink'а на линию подчёркивания, а не
+                # висит над ней. v1.20.7 descender=6pt был слишком мал: якорь
+                # y1 приходит с font-descender (baseline+2pt), и после alpha-
+                # crop визуальный центр подписи оказывался ~15pt выше линии.
+                # 45% высоты (кап 22pt) сдвигает ink к baseline подчёркивания.
+                descender = min(sig_h * 0.45, 22.0)
                 sig_rect = fitz.Rect(
                     anchor_x,
                     anchor_y_bottom - sig_h + descender,
