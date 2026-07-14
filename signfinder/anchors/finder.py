@@ -385,14 +385,12 @@ def find_signatures(doc: ParsedDocument, party: dict) -> list[SignMatch]:
     counter = 0
     compiled = []
     for pat in party.get("patterns", []):
+        # v1.20.10: reverse+multiline паттерны (line→role через \s\S) более НЕ
+        # блокируются. Исторический предохранитель против .*-жадности убран,
+        # т.к. auto1._normalize_sameline теперь пропускает reverse-паттерны
+        # как есть (с оригинальным [\s\S]{0,N} — жадность ограничена квантором),
+        # а без них не находятся футер-подписи вида '___\nЗаказчик'.
         try:
-            pat_stripped = re.sub(r'^\(\?:', '', pat)
-            is_reverse = (pat_stripped.startswith('_') or
-                          pat_stripped.startswith('\\.') or
-                          pat_stripped.startswith('.'))
-            has_multiline = '\\s\\S' in pat or '\\S\\s' in pat
-            if is_reverse and has_multiline:
-                continue
             compiled.append((pat, re.compile(pat, re.IGNORECASE | re.UNICODE)))
         except re.error:
             continue

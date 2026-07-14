@@ -1,5 +1,22 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.10 (Fix-8, verified against a real LibreOffice-converted document + real
+LLM final_patterns — see TASK_fix8.md):
+  - pdf/overlay.py: descender 0.45*sig_h (cap 22pt) -> 0.18*sig_h (cap 8pt).
+    v1.20.9 overcorrected past the line entirely.
+  - pipeline/auto1.py: _normalize_sameline no longer blindly rewrites [\\s\\S]
+    -> [^\\n] on every LLM pattern. Reverse patterns (line->role, e.g.
+    '_{3,}...Заказчик') are kept with their original cross-line reach —
+    needed to catch footer signature blocks, where PyMuPDF extracts the
+    underscore run and the role word as separate lines even though they're
+    one text run in the DOCX. Forward patterns (role->line) get a smart
+    same-line-with-one-optional-\\n rewrite instead of full multiline, so
+    they can't jump into the next paragraph.
+  - anchors/finder.py: removed the `is_reverse and has_multiline: continue`
+    guard in find_signatures — dead code after the above (normalization no
+    longer produces that combination for forward patterns, and reverse
+    patterns need to survive specifically to catch footers).
+
 v1.20.9:
   - pdf/overlay.py: bump signature descender 15%/6pt -> 45%/22pt so ink center
     lands ON the underscore line instead of ~15pt above it (Fix-7 followup)
@@ -103,7 +120,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.9"
+__version__ = "1.20.10"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
