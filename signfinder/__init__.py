@@ -1,5 +1,41 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.12 (Fix-10.3, diagnosed from a real production analyze() response showing
+10 anchors instead of 5, signature on both Заказчик AND Подрядчик footer lines):
+  - pdf/parser.py: new _detect_local_dual_zones() + ParsedPage.dual_zones.
+    _detect_gutter() scans the WHOLE page's words for one corridor with <=2
+    crossings — on a page dominated by full-width body paragraphs, a narrow
+    two-block footer line ("Заказчик____   Подрядчик____") is invisible to it
+    (body words swamp every candidate cut), so doc.layout comes out
+    single_column even though that one footer line is genuinely two-sided.
+    Verified directly against signed_1ДоговорЛебедев.pdf's real word
+    coordinates: _detect_gutter finds nothing on any page, but the footer row
+    (y=766.9-781.2) has a clean 152pt gap centered at 47% width. The new
+    function clusters words into rows by vertical bbox overlap (catches the
+    case where the underscore run and the role label are separate MuPDF
+    'line's despite occupying the same visual row) and looks for a
+    per-row gap >=8% page width centered in the 25-75% band.
+  - pipeline/auto1.py: _filter_by_our_side_context gate no longer requires
+    doc.layout=="dual_column_vertical" alone — it also fires when any page
+    has local dual_zones. The function itself is now zone-aware: a match is
+    only subject to the our-side context check if it's on a fully
+    dual_column_vertical page (old behavior, unchanged) OR its bbox falls
+    inside one of that page's dual_zones (+-4pt margin). Matches outside any
+    zone pass through untouched, same as before on ordinary single_column
+    pages — this only widens WHERE the existing, already-proven context
+    check is allowed to run, it doesn't change what it does.
+  - Root cause of the regression: an LLM-generated reverse pattern like
+    '_{3,}[\\s\\S]{0,50}Заказчик' is ambiguous on this footer — Заказчик's own
+    underscore run is followed by a huge run of trailing spaces (~95 chars)
+    before reaching the word "Заказчик", which overflows the {0,50} budget,
+    so the only regex match that budget-fits starts at Подрядчик's own
+    underscore run instead (one \\n away from "Заказчик"). Without the
+    our-side filter (skipped — single_column), that false match survives
+    alongside a correct one and both get saved into the remembered template,
+    reproducing on every future match. This was not a Fix-10.1 bug — remember
+    faithfully persisted whatever _workAnchors already contained from the
+    original analyze() call.
+
 v1.20.11 (Fix-10.1):
   - pdf/overlay.py: the freeform-bbox placement bypass now also fires for
     added_by=="manual_click", not just "manual_exact". manual_click is
@@ -133,7 +169,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.11"
+__version__ = "1.20.12"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────

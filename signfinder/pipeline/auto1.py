@@ -605,11 +605,19 @@ def _add_docusign_tab_patterns(
 
 def _filter_by_our_side_context(
     matches: list,
-    page_texts: list,
+    doc_pages: list,
     our_side: dict,
     trusted_patterns: "set[str] | None" = None,
 ) -> list:
     """Оставить только матчи где в 80 символах ПЕРЕД якорем есть наши синонимы.
+
+    Фильтр применяется точечно — только к матчам, физически попадающим в
+    двухколоночную зону: либо вся страница dual_column_vertical (старое
+    поведение при документ-уровне dual layout), либо локальная Y-полоса из
+    ParsedPage.dual_zones (напр. строка футера "Заказчик___  Подрядчик___"
+    на однокол­оночной странице — см. _detect_local_dual_zones в parser.py).
+    Матчи вне таких зон не трогаем: там нет двухколоночной двусмысленности,
+    фильтровать нечего и незачем рисковать ложным срабатыванием.
 
     trusted_patterns — паттерны которые всегда доверенные (signer_pats):
     они уже заякорены на ФИО нашего подписанта, контекст проверять не нужно.
@@ -639,22 +647,39 @@ def _filter_by_our_side_context(
     if not synonyms:
         return matches
 
+    zone_margin = 4.0  # pt — допуск на неточность bbox матча относительно найденной зоны
+
     result = []
     for m in matches:
         # Доверенные паттерны (по ФИО подписанта) — не фильтруем, они и так специфичны
         if trusted_patterns and getattr(m, "pattern", "") in trusted_patterns:
             result.append(m)
             continue
+
         page_idx = getattr(m, "page_hint", None) or getattr(m, "page", None)
         if page_idx is None:
             result.append(m)
             continue
         try:
-            page_text = page_texts[int(page_idx)].lower()
-        except (IndexError, TypeError):
+            page = doc_pages[int(page_idx)]
+        except (IndexError, TypeError, ValueError):
             result.append(m)
             continue
 
+        in_zone = getattr(page, "layout", "single_column") == "dual_column_vertical"
+        if not in_zone:
+            bbox = getattr(m, "bbox", None)
+            if bbox:
+                m_y0, m_y1 = bbox[1], bbox[3]
+                for (z_y0, z_y1, _gx) in getattr(page, "dual_zones", None) or []:
+                    if m_y0 < z_y1 + zone_margin and m_y1 > z_y0 - zone_margin:
+                        in_zone = True
+                        break
+        if not in_zone:
+            result.append(m)
+            continue
+
+        page_text = page.text.lower()
         # SignMatch использует 'context', TextAnchor — 'anchor_text'
         ctx_text = (getattr(m, "context", "") or getattr(m, "anchor_text", "") or "").strip().lower()
         match_pos = page_text.find(ctx_text[:20]) if ctx_text else -1
@@ -939,22 +964,30 @@ def run_pipeline_auto_1(
 
     debug["step5_matches_count"] = len(matches)
 
-    # Фильтр по нашей стороне — ТОЛЬКО для dual_column_vertical.
-    # Цель: убрать ложные блоки КЛИЕНТА когда на одной странице два похожих блока.
-    # Для single_column не нужен: step3 уже нашёл нашу сторону, паттерны корректны.
-    if our_side and getattr(doc, "layout", "single_column") == "dual_column_vertical":
+    # Фильтр по нашей стороне — для dual_column_vertical (весь документ) ИЛИ
+    # когда на однокол­оночном документе есть локальные двухколоночные строки
+    # (напр. футер "Заказчик___  Подрядчик___" — гутter не виден на уровне
+    # страницы/документа, т.к. тонет в словах основного текста, см.
+    # _detect_local_dual_zones). Фильтр внутри сам ограничивается матчами
+    # внутри найденных зон — вне зон ничего не меняется.
+    doc_is_dual = getattr(doc, "layout", "single_column") == "dual_column_vertical"
+    has_local_zones = any(getattr(p, "dual_zones", None) for p in doc.pages)
+    if our_side and (doc_is_dual or has_local_zones):
+        before = len(matches)
         matches = _filter_by_our_side_context(
-            matches, [p.text for p in doc.pages], our_side,
+            matches, doc.pages, our_side,
             trusted_patterns=set(signer_pats),
         )
         debug["our_side_filter"] = {
             "applied": True,
+            "reason": "dual_column_vertical" if doc_is_dual else "local_dual_zones",
+            "anchors_before_filter": before,
             "anchors_after_filter": len(matches),
         }
     else:
         debug["our_side_filter"] = {
             "applied": False,
-            "reason": "single_column — filter skipped",
+            "reason": "single_column, no local dual zones — filter skipped",
         }
 
     if not matches:

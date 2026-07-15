@@ -10,6 +10,7 @@ from signfinder.pdf.parser import (
     ParsedDocument,
     _build_column_text,
     _detect_gutter,
+    _detect_local_dual_zones,
     parse_pdf_bytes,
 )
 
@@ -180,3 +181,101 @@ def test_parsed_document_has_languages_list(pdf_bytes):
     doc = parse_pdf_bytes(pdf_bytes, filename="test.pdf")
     assert isinstance(doc.languages, list)
     assert len(doc.languages) >= 1
+
+
+# ── _detect_local_dual_zones (Fix-10.3) — локальные двухколоночные строки ────
+# Регрессия: реверс-паттерн вида `_{3,}[\s\S]{0,50}Заказчик` на однокол­оночном
+# документе задваивался (совпадал и с "нашей" линией, и с линией контрагента
+# в той же строке футера), потому что _detect_gutter (весь документ разом) не
+# видит локальный разрыв футера на фоне слов основного текста — see CLAUDE.md
+# v1.20.12. Геометрия footer-теста — реальные координаты из
+# signed_1ДоговорЛебедев.pdf (стр. 0-4), снятые напрямую через PyMuPDF.
+
+def test_detect_local_dual_zones_footer_style():
+    """Строка 'Заказчик____   Подрядчик____' (в MuPDF — 4 разных 'line', но с
+    вертикальным перекрытием bbox) → находит одну зону с разрывом по центру."""
+    words = [
+        _word_tuple("Заказчик", 35.55, 768.5, w=45.36, h=12.27),
+        _word_tuple("______________________________", 80.95, 766.9, w=122.26, h=14.3),
+        _word_tuple("__________________________________", 410.99, 766.9, w=138.59, h=14.3),
+        _word_tuple("Подрядчик", 355.79, 768.5, w=55.59, h=12.27),
+    ]
+    zones = _detect_local_dual_zones(words, page_width=595)
+    assert len(zones) == 1
+    y0, y1, gx = zones[0]
+    assert 766 <= y0 <= 769
+    assert 780 <= y1 <= 782
+    assert 250 <= gx <= 310  # центр разрыва между блоками
+
+
+def test_detect_local_dual_zones_no_zone_on_body_text():
+    """Обычные абзацы одноколоночного текста (слова через всю ширину, без
+    большого разрыва по центру строки) → зон не найдено."""
+    words = []
+    lines = [
+        "This single column contract document is for service delivery between",
+        "The agreement covers development and testing work described in appendix",
+        "Payment terms include net thirty days from invoice date upon completion",
+    ]
+    for i, line in enumerate(lines):
+        x = 50
+        for word in line.split():
+            w = len(word) * 6
+            words.append(_word_tuple(word, x, 100 + i * 20, w=w, h=12))
+            x += w + 5
+    zones = _detect_local_dual_zones(words, page_width=595)
+    assert zones == []
+
+
+def test_detect_local_dual_zones_empty():
+    assert _detect_local_dual_zones([], page_width=595) == []
+
+
+def test_detect_local_dual_zones_ignores_edge_gap():
+    """Разрыв, центр которого лежит у самого края страницы (вне 25-75%), не
+    считается зоной — это короткая последняя строка абзаца, не двухколоночный
+    блок."""
+    words = [
+        _word_tuple("word", 35, 100, w=400),   # x1=435
+        _word_tuple("tail", 560, 100, w=20),   # разрыв 435-560, центр=497.5 → 84% ширины
+    ]
+    zones = _detect_local_dual_zones(words, page_width=595)
+    assert zones == []
+
+
+def _make_single_column_pdf_with_footer() -> bytes:
+    """Одноколоночный документ (абзацы во всю ширину, как в _make_single_column_pdf —
+    нужно ДОСТАТОЧНО строк, чтобы слова абзацев перекрывали 35-65% зону чаще
+    чем 2 раза почти на любом разрезе, иначе _detect_gutter поймает разрыв
+    футера и на уровне страницы) плюс двухсторонняя строка подписи в футере."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    lines = [
+        "This single column contract document is for service delivery between parties",
+        "The agreement covers development and testing work described in the appendix",
+        "Payment terms include net thirty days from invoice date upon full completion",
+        "All intellectual property created during performance belongs to the client",
+        "This document represents the complete understanding between both parties here",
+        "Modifications require written consent from authorized representatives only now",
+        "Disputes resolved through binding arbitration under local laws and regulations",
+        "The contract terminates automatically upon completion of all deliverables listed",
+    ]
+    for i, line in enumerate(lines):
+        page.insert_text((50, 100 + i * 25), line, fontsize=10)
+    page.insert_text((50, 760), "Customer_____________", fontsize=10)
+    page.insert_text((400, 760), "Contractor____________", fontsize=10)
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+def test_parse_pdf_local_dual_zone_on_single_column_doc():
+    """Одноколоночный документ с двухсторонней строкой в футере: doc.layout
+    остаётся single_column (гутter не виден на уровне страницы — абзацы
+    занимают всю ширину), но ParsedPage.dual_zones находит локальный разрыв
+    футера. Регрессионный тест Fix-10.3."""
+    pdf = _make_single_column_pdf_with_footer()
+    doc = parse_pdf_bytes(pdf, filename="test.pdf")
+    assert doc.layout == "single_column"
+    assert len(doc.pages[0].dual_zones) >= 1

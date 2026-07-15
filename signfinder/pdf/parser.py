@@ -26,6 +26,7 @@ class ParsedPage:
     layout: str = "single_column"          # "single_column" | "dual_column_vertical"
     gutter_x: float | None = None          # x-координата коридора (pt)
     languages: list = field(default_factory=list)  # ["en"] или ["mk", "en"]
+    dual_zones: list = field(default_factory=list)  # [(y0, y1, gutter_x), ...] — локальные двухколоночные строки (напр. футер "Заказчик___  Подрядчик___") даже когда layout страницы single_column
 
 
 @dataclass
@@ -59,6 +60,64 @@ def _detect_gutter(words_raw: list, page_width: float) -> float | None:
         if crossing < best_cross:
             best_cross, best_cut = crossing, cut
     return float(best_cut) if (best_cross <= 2 and best_cut is not None) else None
+
+
+def _detect_local_dual_zones(words_raw: list, page_width: float) -> list:
+    """Найти узкие Y-полосы с локальным двухколоночным разрывом на однокол­оночной
+    странице (напр. строка футера "Заказчик____   Подрядчик____" или блок
+    реквизитов с двумя сторонами рядом).
+
+    _detect_gutter смотрит на ВСЕ слова страницы разом и ищет один разрез с
+    ≤2 пересечений — на странице, где абзацы основного текста идут через всю
+    ширину, любой разрез в зоне 35-65% пересекают десятки слов абзацев, и
+    локальный разрыв в футере/реквизитах тонет в этом шуме (доказано на
+    signed_1ДоговорЛебедев.pdf: гутter не находится ни на одной странице,
+    хотя футер каждой страницы физически состоит из двух блоков через пробел
+    ~150pt).
+
+    Здесь вместо одного разреза по всей странице — слова сначала группируются
+    в строки по вертикальному перекрытию bbox (это же покрывает случай когда
+    подчёркивание и подпись-лейбл — формально разные MuPDF "line", но
+    физически одна визуальная строка, как в футерах LibreOffice-конвертации),
+    а затем в КАЖДОЙ строке независимо ищется наибольший горизонтальный
+    разрыв. Строка считается локальной двухколоночной зоной если разрыв
+    ≥8% ширины страницы и его центр лежит в 25-75% ширины.
+
+    Возвращает список (y0, y1, gutter_x) только для таких строк — это НЕ
+    layout всей страницы, а точечные протоколы для _filter_by_our_side_context.
+    """
+    if not words_raw:
+        return []
+
+    rows: list = []
+    for w in sorted(words_raw, key=lambda w: w[1]):
+        for row in rows:
+            row_y0 = min(r[1] for r in row)
+            row_y1 = max(r[3] for r in row)
+            if w[1] < row_y1 and w[3] > row_y0:  # вертикальное перекрытие bbox
+                row.append(w)
+                break
+        else:
+            rows.append([w])
+
+    zones = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+        row_sorted = sorted(row, key=lambda r: r[0])
+        best_gap, best_center = 0.0, None
+        for a, b in zip(row_sorted, row_sorted[1:]):
+            gap = b[0] - a[2]
+            if gap > best_gap:
+                best_gap, best_center = gap, (a[2] + b[0]) / 2
+        if (best_center is not None
+                and best_gap >= page_width * 0.08
+                and page_width * 0.25 <= best_center <= page_width * 0.75):
+            row_y0 = min(r[1] for r in row)
+            row_y1 = max(r[3] for r in row)
+            zones.append((row_y0, row_y1, best_center))
+
+    return zones
 
 
 def _build_column_text(words_raw: list, x_max: float | None = None,
@@ -155,9 +214,11 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str) -> ParsedDocument:
 
         words = [Word(text=w[4], bbox=(w[0], w[1], w[2], w[3])) for w in words_raw]
         full_text_parts.append(page_text)
+        dual_zones = _detect_local_dual_zones(words_raw, pw)
         pages.append(ParsedPage(
             page_num=page_num, text=page_text, words=words,
             layout=p_layout, gutter_x=gutter, languages=page_langs,
+            dual_zones=dual_zones,
         ))
 
     doc.close()
