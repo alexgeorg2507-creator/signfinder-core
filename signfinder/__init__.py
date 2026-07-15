@@ -1,5 +1,18 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.11 (Fix-10.1):
+  - pdf/overlay.py: the freeform-bbox placement bypass now also fires for
+    added_by=="manual_click", not just "manual_exact". manual_click is
+    TextAnchor's own established provenance for an operator-placed exact
+    bbox (anchors/finder.py's apply_template_anchors already special-cases
+    it when reapplying a matched template, and stamps the resulting
+    SignMatch with added_by="manual_click") — but overlay.py's bypass only
+    recognized "manual_exact" (the /v1/me/sign live-manual-placement
+    convention introduced in v1.20.8), so a remembered manual placement,
+    once reapplied via a green template match, fell through to the
+    text-search placement path meant for auto-detected anchors, which has
+    nothing nearby to search for at a freeform point.
+
 v1.20.10 (Fix-8, verified against a real LibreOffice-converted document + real
 LLM final_patterns — see TASK_fix8.md):
   - pdf/overlay.py: descender 0.45*sig_h (cap 22pt) -> 0.18*sig_h (cap 8pt).
@@ -120,7 +133,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.10"
+__version__ = "1.20.11"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────

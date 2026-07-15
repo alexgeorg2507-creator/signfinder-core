@@ -76,7 +76,15 @@ def apply_signature(
 
         # PNG подпись
         if use_signature and img_stream is not None:
-            if getattr(m, "added_by", "") == "manual_exact":
+            # Fix-10: "manual_exact" — freeform-размещение прямо сейчас (drag/resize
+            # в кабинете, /v1/me/sign с manual_anchors_json, v1.20.8). "manual_click" —
+            # тот же freeform-bbox, но пришедший через remember → сохранённый шаблон →
+            # apply_template_anchors (finder.py, v1.18.2), которая уже кладёт точный
+            # bbox оператора в SignMatch с этим added_by. До этой правки overlay
+            # проверял только "manual_exact" — reapply'нутая ручная подпись из
+            # шаблона проваливалась в текстовый поиск ниже, для которого рядом с
+            # freeform-точкой обычно нет ни текста, ни подчёркивания.
+            if getattr(m, "added_by", "") in ("manual_exact", "manual_click"):
                 # Freeform-размещение (drag/resize в кабинете) — вставляем PNG буквально
                 # в переданный bbox: без текстового поиска линии и без общего scale,
                 # размер задаётся самим прямоугольником, а не sig_h/sig_w.
