@@ -1,5 +1,25 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.13 (Fix-10.4, reported after Fix-10.3 confirmed fixed: "manual signature's
+size/position aren't saved in the template"):
+  - __init__.py: SignFinder._to_match() — converts a TextAnchor into a SignMatch
+    for sign(); built the SignMatch without passing added_by, so it silently
+    fell back to SignMatch's default "auto_regex". Every manual_click anchor
+    that reaches sign() as a TextAnchor (i.e. anything except the very first
+    live placement, which arrives pre-built as a SignMatch via
+    manual_anchors_json and skips _to_match entirely — a green template match
+    reapplying a remembered manual anchor, or a plain resign after reload)
+    got downgraded to auto_regex. apply_signature()'s manual_exact/manual_click
+    bypass (overlay.py) then didn't fire, so it fell through to the text-search
+    placement branch with pattern="" (manual anchors' generated_pattern is
+    always empty) — losing both the exact bbox (position) and the drawn
+    width/height (size, since that branch computes sig_h/sig_w from
+    DEFAULT_SIGNATURE_HEIGHT_PT*scale, not from the anchor's own bbox).
+    manual_match_to_anchor() (anchors/finder.py, v1.18.3) already carries
+    added_by through the opposite direction (SignMatch -> TextAnchor) with a
+    docstring warning about exactly this risk — _to_match was the direction
+    that got missed. One-line fix: pass added_by=item.added_by through.
+
 v1.20.12 (Fix-10.3, diagnosed from a real production analyze() response showing
 10 anchors instead of 5, signature on both Заказчик AND Подрядчик footer lines):
   - pdf/parser.py: new _detect_local_dual_zones() + ParsedPage.dual_zones.
@@ -169,7 +189,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.12"
+__version__ = "1.20.13"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -436,7 +456,8 @@ class SignFinder:
                 except (ValueError, TypeError):
                     page = 0
             return SignMatch(id=item.id, page=page, bbox=item.bbox, context=item.anchor_text,
-                             party="anchor", pattern=item.generated_pattern, confidence=1.0)
+                             party="anchor", pattern=item.generated_pattern, confidence=1.0,
+                             added_by=item.added_by)
         raise TypeError(f"Expected SignMatch or TextAnchor, got {type(item).__name__}")
 
 
