@@ -560,28 +560,67 @@ def apply_template_anchors(doc, template) -> list[SignMatch]:
                 except (ValueError, TypeError):
                     page_range = list(range(len(doc.pages)))
 
-            # v1.18.2 FIX: ручные якоря (manual_click) несут точный bbox, выбранный
+            # v1.18.2: ручные якоря (manual_click) несут точный bbox, выбранный
             # оператором кликом. Повторный прогон generated_pattern перенёс бы подпись
             # на другую подчёркнутую линию (паттерн матчит несколько мест на странице).
-            # Берём сохранённый bbox напрямую — ровно туда, куда поставил оператор.
             if getattr(anchor, "added_by", "") == "manual_click":
-                bbox = anchor.bbox
                 fb_page = page_range[0] if page_range else 0
-                if (isinstance(bbox, (list, tuple)) and len(bbox) == 4
+                bbox = anchor.bbox
+                resolved_bbox = None
+
+                # Fix-12: попробовать найти текст-ориентир на новой странице документа —
+                # если найден, применить сохранённое смещение вместо примороженных
+                # абсолютных координат. Переживает небольшой реflow (документ чуть другой
+                # длины/вёрстки), в отличие от старого поведения (голый bbox).
+                probe_data = None
+                if anchor.context_before:
+                    try:
+                        import json as _json
+                        probe_data = _json.loads(anchor.context_before)
+                    except (ValueError, TypeError):
+                        probe_data = None
+
+                if probe_data and anchor.anchor_text and 0 <= fb_page < len(doc.pages):
+                    try:
+                        search_page = pdf_doc[fb_page]
+                        found = search_page.search_for(anchor.anchor_text)
+                        if found:
+                            # Ближайший найденный к исходной позиции текста-ориентира —
+                            # на случай если слово встречается на странице несколько раз
+                            orig_bbox = probe_data.get("anchor_bbox")
+                            if orig_bbox:
+                                def _d(r):
+                                    return ((r.x0 - orig_bbox[0]) ** 2 + (r.y0 - orig_bbox[1]) ** 2) ** 0.5
+                                best = min(found, key=_d)
+                            else:
+                                best = found[0]
+                            dx = probe_data.get("offset_dx", 0.0)
+                            dy = probe_data.get("offset_dy", 0.0)
+                            w = bbox[2] - bbox[0] if isinstance(bbox, (list, tuple)) else 100
+                            h = bbox[3] - bbox[1] if isinstance(bbox, (list, tuple)) else 30
+                            resolved_bbox = [
+                                best.x0 + dx, best.y0 + dy,
+                                best.x0 + dx + w, best.y0 + dy + h,
+                            ]
+                    except Exception as e:
+                        sys.stderr.write(f"[finder] manual-anchor text-search failed: {e}\n")
+
+                final_bbox = resolved_bbox or bbox
+                if (isinstance(final_bbox, (list, tuple)) and len(final_bbox) == 4
                         and 0 <= fb_page < len(doc.pages)):
                     counter += 1
                     matches.append(SignMatch(
                         id=f"tpl_{counter:03d}",
                         page=fb_page,
-                        bbox=tuple(bbox),
+                        bbox=tuple(final_bbox),
                         context=(anchor.anchor_text or "")[:120],
                         party=getattr(template, "name", "template"),
                         pattern=pattern_str or "",
                         added_by="manual_click",
                     ))
                     sys.stderr.write(
-                        f"[finder] manual-anchor direct bbox page={fb_page} "
-                        f"text={repr((anchor.anchor_text or '')[:40])}\n"
+                        f"[finder] manual-anchor {'text-resolved' if resolved_bbox else 'frozen-bbox'} "
+                        f"page={fb_page} text={repr((anchor.anchor_text or '')[:40])}\n"
                     )
                 continue
 

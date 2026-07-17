@@ -1,5 +1,26 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.14 (Fix-12.3, text-anchored manual placements):
+  - anchors/finder.py: apply_template_anchors's manual_click branch now tries
+    a text-search-first reapply before falling back to the frozen absolute
+    bbox recorded at click time. The cabinet's manual-placement UI
+    (SignfinderLand) now probes the nearest text landmark on confirm (new
+    signfinder-api endpoint POST /v1/me/manual-anchor/probe) and remembers
+    {anchor_bbox, offset_dx, offset_dy} in TextAnchor.context_before as JSON
+    (reusing an existing field that manual_click anchors never populated
+    otherwise — no schema migration). On reapply: search_for(anchor_text) on
+    the new document's page, pick the occurrence closest to the original
+    anchor_bbox position if the text repeats, then place at
+    found.x0+offset_dx / found.y0+offset_dy with the ORIGINAL drawn
+    width/height (not recomputed). Falls back to the old frozen-bbox
+    behavior whenever context_before is empty/unparseable (templates saved
+    before this change) or the text isn't found at all (radically different
+    document) — same fallback signfinder-core/pdf/overlay.py's manual bypass
+    already relies on for bbox shape. 5 new tests
+    (tests/test_manual_anchor_reapply.py): reflow-follows-text, not-found
+    fallback, old-template fallback, malformed-JSON fallback,
+    multi-occurrence disambiguation by proximity to the original position.
+
 v1.20.13 (Fix-10.4, reported after Fix-10.3 confirmed fixed: "manual signature's
 size/position aren't saved in the template"):
   - __init__.py: SignFinder._to_match() — converts a TextAnchor into a SignMatch
@@ -189,7 +210,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.13"
+__version__ = "1.20.14"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
