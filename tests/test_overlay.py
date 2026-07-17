@@ -98,8 +98,9 @@ def test_signature_x_offset_pt_constant():
 
 
 def test_default_signature_height_pt_value():
-    """DEFAULT_SIGNATURE_HEIGHT_PT == 42."""
-    assert DEFAULT_SIGNATURE_HEIGHT_PT == 42
+    """DEFAULT_SIGNATURE_HEIGHT_PT == 28 (v1.20.17 — было 42, слишком крупно
+    относительно ручной простановки со стандартным размером плейсера)."""
+    assert DEFAULT_SIGNATURE_HEIGHT_PT == 28
 
 
 # ── Маркер координаты ─────────────────────────────────────────────────────────

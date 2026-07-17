@@ -1,5 +1,25 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.17 (cosmetic, reported directly against a live signed PDF): auto-placed
+signature visibly larger than a manually-placed one left at the cabinet's own
+default (unresized) box.
+  - pdf/overlay.py: DEFAULT_SIGNATURE_HEIGHT_PT 42pt -> 28pt. Root cause:
+    the manual placer's default box (130x54.6 CSS px, SignfinderLand's
+    _onPagePlaceClick) goes through page.insert_image(..., keep_proportion=
+    True) in apply_signature, so a signature PNG wider than the box's own
+    ~2.4 aspect ratio gets fit BY WIDTH, shrinking the effective height well
+    below the box's own 54.6px-converted height. The auto path had no such
+    constraint — sig_w = sig_h * aspect, uncapped — so it always rendered at
+    the full 42pt regardless of how wide that made it. 28pt is a first
+    evidence-based estimate from a real side-by-side screenshot, not a
+    derived invariant: the manual default's effective PDF-point size
+    depends on browser viewport width (canvas._pdfScale) and the specific
+    signature's aspect ratio, so no single constant matches it exactly at
+    every window size — same iterate-on-real-screenshots approach already
+    used for the descender constant (v1.20.7 -> v1.20.9 -> v1.20.10).
+  - Position/descender untouched per explicit instruction — this is a size-
+    only change.
+
 v1.20.16 (Fix-14.1, generalized after a second real document hit the same
 failure mode through DIFFERENT patterns — not just _add_reverse_underscore_patterns'
 own):
@@ -304,7 +324,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.16"
+__version__ = "1.20.17"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
