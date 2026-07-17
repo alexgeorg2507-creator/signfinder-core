@@ -551,6 +551,130 @@ def _add_reverse_dot_patterns(
     return final_patterns + extras
 
 
+def _add_reverse_underscore_patterns(
+    final_patterns: list,
+    our_side,
+) -> "tuple[list, set]":
+    """Добавить непотребляющие (lookahead) паттерны _{3,} для случаев когда
+    подчёркнутая линия ПЕРЕД ролью/юрлицом (типичный футер вида
+    'Заказчик_______  Подрядчик________', обе стороны на одной визуальной
+    строке).
+
+    Детерминированная страховка — LLM (run_step4) недетерминирован и не всегда
+    сам генерирует reverse-underscore паттерн на роль/юрлицо, даже когда он
+    структурно нужен документу. _signer_underscore_patterns уже покрывает ФИО
+    подписанта; здесь закрываем роли и юрлицо тем же способом, каким
+    _add_reverse_dot_patterns уже закрывает точечные линии.
+
+    ВАЖНО (Fix-14, проверено на реальном документе с двухсторонним футером):
+    паттерн — lookahead `_{3,}(?=[\\s\\S]{0,150}X)`, НЕ потребляющий текст
+    вперёд, в отличие от _add_reverse_dot_patterns:
+      - `[^\\n]{0,N}` (однострочный, как у LLM в неудачном прогоне) никогда не
+        матчит: подчёркивание и роль в этом футере — разные извлечённые
+        PyMuPDF-строки даже при бюджете 200+, значит нужен кросс-строчный охват.
+      - Потребляющий `[\\s\\S]{0,N}X` при бюджете, достаточном чтобы дотянуться
+        через разрыв (~130 символов на реальном документе), даёт bbox на ВСЮ
+        ширину футера — _expand_line_bbox склеивает обе стороны в одну
+        "непрерывную линию" по matched_text, растянутому на обе колонки.
+      - Lookahead не потребляет — matched_text остаётся только самим
+        подчёркиванием (одна строка), _expand_line_bbox расширяет его только
+        до контигуой линии на ЭТОЙ стороне (слово + собственное подчёркивание,
+        видно по факту merge — они физически соприкасаются). Но раз lookahead
+        не потребляет текст, `finditer` находит подчёркивание ОБЕИХ сторон
+        (обе видят цель в пределах бюджета) — отсюда _verify_reverse_underscore_matches
+        ниже: обязательная geometric-проверка, что anchor РЕАЛЬНО лежит внутри
+        итогового bbox, не просто где-то в пределах текстового окна.
+
+    Возвращает (patterns, pattern_set) — pattern_set нужен вызывающей стороне
+    для _verify_reverse_underscore_matches и как trusted_patterns в
+    _filter_by_our_side_context (эти паттерны уже верифицированы geometric-
+    проверкой — доп. текстовый context-фильтр на этом документе бесполезен:
+    футер лежит в PDF как block 0, раньше всего текста тела, так что "80
+    символов до" текстовой позиции матча не совпадает с "текст выше на
+    странице" — этому надёжнее не подвергать).
+    """
+    if not our_side:
+        return final_patterns, set()
+
+    anchors_to_check = []
+    le = (our_side.get("legal_entity") or "").strip()
+    if le:
+        anchors_to_check.append(le[:15])
+    for role in (our_side.get("roles") or []):
+        r = (role or "").strip()
+        if r and len(r) > 3:
+            anchors_to_check.append(r)
+
+    extras = []
+    pattern_set: set = set()
+    for anchor in anchors_to_check:
+        try:
+            esc = re.escape(anchor)
+            p = rf"_{{3,}}(?=[\s\S]{{0,150}}{esc})"
+            re.compile(p, re.IGNORECASE | re.UNICODE)
+            if p not in final_patterns:
+                extras.append(p)
+            pattern_set.add(p)
+        except re.error:
+            pass
+
+    return final_patterns + extras, pattern_set
+
+
+def _verify_reverse_underscore_matches(
+    matches: list,
+    doc: ParsedDocument,
+    our_side: dict,
+    reverse_underscore_pats: set,
+) -> list:
+    """Geometric-проверка для матчей из _add_reverse_underscore_patterns:
+    подтвердить что anchor (роль/юрлицо) реально лежит ВНУТРИ итогового
+    bbox матча, а не просто где-то в пределах lookahead-окна.
+
+    Нужна ИМЕННО из-за непотребляющего lookahead: он находит подчёркивание
+    ОБЕИХ сторон футера (обе видят цель в пределах {0,150} символов), и
+    единственный надёжный способ отличить 'Заказчик____' от 'Подрядчик____'
+    на одной строке — посмотреть, что реально попало в итоговый (уже
+    расширенный _expand_line_bbox) прямоугольник, а не искать текст заново.
+    Матчи от других паттернов не трогает.
+    """
+    if not reverse_underscore_pats or not matches:
+        return matches
+
+    anchors = set()
+    le = (our_side.get("legal_entity") or "").strip()
+    if le:
+        anchors.add(le[:15])
+    for role in (our_side.get("roles") or []):
+        r = (role or "").strip()
+        if r and len(r) > 3:
+            anchors.add(r)
+    if not anchors:
+        return matches
+
+    import fitz
+    pdf_doc = fitz.open(stream=doc.pdf_bytes, filetype="pdf")
+    try:
+        result = []
+        for m in matches:
+            if getattr(m, "pattern", "") not in reverse_underscore_pats:
+                result.append(m)
+                continue
+            try:
+                page = pdf_doc[m.page]
+                box_text = page.get_textbox(fitz.Rect(*m.bbox))
+            except Exception as e:
+                sys.stderr.write(f"[auto1] reverse-underscore bbox verify failed: {e}\n")
+                result.append(m)  # не смогли проверить — не блокируем
+                continue
+            if any(a.lower() in box_text.lower() for a in anchors):
+                result.append(m)
+            # else: bbox не содержит нашего якоря — это чужая колонка, дропаем
+        return result
+    finally:
+        pdf_doc.close()
+
+
 def _add_docusign_tab_patterns(
     final_patterns: list,
     our_side: dict,
@@ -944,6 +1068,18 @@ def run_pipeline_auto_1(
     final_patterns = _add_reverse_dot_patterns(final_patterns, our_side)
     patterns = final_patterns
 
+    # Fix-14: обратные паттерны для подчёркнутых линий (_{3,} → роль/юрлицо) —
+    # детерминированная страховка, не зависит от того, сгенерировал ли LLM
+    # такой паттерн сам (недетерминирован, подтверждено сравнением двух
+    # прогонов на одном документе). Lookahead-паттерны (не потребляют текст) —
+    # matched_text остаётся однострочным подчёркиванием, поэтому нужна
+    # geometric-верификация bbox сразу после step5, см. докстринги обеих
+    # функций для полного обоснования формы паттерна.
+    before_reverse_underscore = len(final_patterns)
+    final_patterns, reverse_underscore_pats = _add_reverse_underscore_patterns(final_patterns, our_side)
+    debug["reverse_underscore_patterns_added"] = len(final_patterns) - before_reverse_underscore
+    patterns = final_patterns
+
     # DocuSign tab-маркеры (\t1\, \e1\) — место подписи без текстовых подчёркиваний
     page_texts_for_tabs = [p.text or "" for p in doc.pages]
     final_patterns = _add_docusign_tab_patterns(final_patterns, our_side, page_texts_for_tabs)
@@ -964,19 +1100,34 @@ def run_pipeline_auto_1(
 
     debug["step5_matches_count"] = len(matches)
 
+    # Fix-14: непотребляющий lookahead в _add_reverse_underscore_patterns
+    # находит подчёркивание ОБЕИХ сторон футера (обе видят anchor в пределах
+    # бюджета) — единственный надёжный способ отличить нашу колонку от чужой
+    # это посмотреть, что реально лежит внутри итогового bbox матча.
+    before_verify = len(matches)
+    matches = _verify_reverse_underscore_matches(matches, doc, our_side, reverse_underscore_pats)
+    debug["reverse_underscore_verify"] = {
+        "before": before_verify,
+        "after": len(matches),
+    }
+
     # Фильтр по нашей стороне — для dual_column_vertical (весь документ) ИЛИ
     # когда на однокол­оночном документе есть локальные двухколоночные строки
     # (напр. футер "Заказчик___  Подрядчик___" — гутter не виден на уровне
     # страницы/документа, т.к. тонет в словах основного текста, см.
     # _detect_local_dual_zones). Фильтр внутри сам ограничивается матчами
-    # внутри найденных зон — вне зон ничего не меняется.
+    # внутри найденных зон — вне зон ничего не меняется. reverse_underscore_pats
+    # уже прошли собственную (более надёжную) geometric-проверку выше — этому
+    # текстовому context-фильтру их подвергать незачем и рискованно: у
+    # документов с футером-block-0 (см. докстринг _add_reverse_underscore_patterns)
+    # текстовая позиция матча не совпадает с "текстом выше на странице".
     doc_is_dual = getattr(doc, "layout", "single_column") == "dual_column_vertical"
     has_local_zones = any(getattr(p, "dual_zones", None) for p in doc.pages)
     if our_side and (doc_is_dual or has_local_zones):
         before = len(matches)
         matches = _filter_by_our_side_context(
             matches, doc.pages, our_side,
-            trusted_patterns=set(signer_pats),
+            trusted_patterns=set(signer_pats) | reverse_underscore_pats,
         )
         debug["our_side_filter"] = {
             "applied": True,

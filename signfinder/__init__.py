@@ -1,5 +1,55 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.15 (Fix-14, deterministic footer coverage — redesigned from the task's
+own draft after its cited evidence turned out to contradict it):
+  - pipeline/auto1.py: _add_reverse_underscore_patterns() + a mandatory
+    companion _verify_reverse_underscore_matches(), both new. Same problem
+    _add_reverse_dot_patterns solves for dotted lines (\\.{5,}) — a
+    deterministic insurance layer for underscored footer lines like
+    "Заказчик____  Подрядчик____", since run_step4 (LLM) doesn't reliably
+    generate this pattern shape on its own (confirmed by comparing two real
+    analyze() runs on the same document: one got lucky, one didn't).
+  - The task's own draft proposed `_{3,}[^\\n]{0,50}X` (single-line,
+    mirroring _add_reverse_dot_patterns' shape) and cited
+    debug_fix8_final_patterns.json as evidence it works. Re-read that exact
+    file before implementing: it documents the opposite — that pattern was
+    present in an LLM run's final_patterns but produced zero matches, with
+    an explicit note "не матчит — гипотеза кодера про [^\\n] vs [\\s\\S]
+    проверяется этим скриптом". Confirmed why: on this document's footer,
+    the underscore run and the role word are on different PyMuPDF-extracted
+    lines even at generous budgets — [^\\n] structurally cannot cross that
+    boundary, at any width.
+  - Tried the cross-line fix instead (`_{3,}[\\s\\S]{0,N}X`, consuming).
+    Empirically works for finding the right start position once N>=100, but
+    _expand_line_bbox then merges the match's now-multi-line matched_text
+    into a bbox spanning the ENTIRE footer width (both parties' columns) —
+    unusable for signature placement.
+  - Landed on a non-consuming lookahead instead: `_{3,}(?=[\\s\\S]{0,150}X)`.
+    matched_text stays just the underscore run (single line), so
+    _expand_line_bbox only merges the contiguous same-column content (role
+    word + its own underscores) — clean, correctly-sized bbox. Trade-off:
+    since the lookahead doesn't consume, finditer finds the underscore run
+    on BOTH sides of the footer (each independently sees the target role
+    within budget) — hence _verify_reverse_underscore_matches: a mandatory
+    follow-up pass that opens the page and checks with
+    page.get_textbox(match.bbox) whether the role/legal_entity text is
+    actually inside the match's own (already _expand_line_bbox-expanded)
+    rectangle, dropping it otherwise. Proven on the real document: 10 raw
+    matches (5 correct + 5 wrong-party) -> 5 correct, deterministic across 3
+    repeated runs (pure regex, no LLM in this layer).
+  - Deliberately does NOT route these matches through
+    _filter_by_our_side_context's existing text-context check — traced why
+    it can't work here anyway: on this document the footer is PDF content
+    block 0 (extracted before any body text), so "80 characters of text
+    before the match" has no relationship to "content visually above it on
+    the page". These patterns are added to the filter's trusted_patterns
+    set instead (same mechanism already used for signer_pats), since
+    get_textbox is already a strictly more precise check for this case.
+  - New debug fields: reverse_underscore_patterns_added,
+    reverse_underscore_verify {before, after}.
+  - 12 new tests (test_reverse_underscore_patterns.py). Full suite: 153
+    passed.
+
 v1.20.14 (Fix-12.3, text-anchored manual placements):
   - anchors/finder.py: apply_template_anchors's manual_click branch now tries
     a text-search-first reapply before falling back to the frozen absolute
@@ -210,7 +260,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.14"
+__version__ = "1.20.15"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
