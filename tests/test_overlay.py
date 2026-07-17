@@ -57,13 +57,41 @@ def _make_match(page: int = 0, bbox=(50.0, 390.0, 300.0, 405.0), pattern: str = 
 # ── _find_underscore_anchor ───────────────────────────────────────────────────
 
 def test_find_underscore_anchor_pattern_starts_with_underscore():
-    """Если pattern начинается с '_' → возвращает x0 + SIGNATURE_X_OFFSET_PT."""
+    """Если pattern начинается с '_' и bbox шире самой линии (здесь bbox.x0=50
+    начинается на слове "Lessor:", реальные подчёркивания — с x≈85.57, как и
+    в реальном футере "Заказчик___" после _expand_line_bbox, см. v1.20.18) —
+    возвращает x РЕАЛЬНОЙ линии, найденной внутри bbox, а не голый bbox.x0."""
     pdf_bytes = _make_simple_pdf_with_underscores()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[0]
     bbox = (50.0, 390.0, 300.0, 405.0)
     pattern = "___Lessor"
     x, y_bottom, line_h = _find_underscore_anchor(page, bbox, pattern)
+    doc.close()
+    assert abs(x - (85.57 + SIGNATURE_X_OFFSET_PT)) < 1.0
+
+
+def test_find_underscore_anchor_tight_bbox_unchanged():
+    """bbox уже плотно облегает саму линию (нет слитого лейбла перед ней) —
+    найденная позиция совпадает с bbox.x0, поведение как раньше."""
+    pdf_bytes = _make_simple_pdf_with_underscores()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[0]
+    # bbox начинается прямо с подчёркивания (x≈85.57), не с "Lessor:"
+    bbox = (85.57, 390.0, 191.21, 405.0)
+    x, y_bottom, line_h = _find_underscore_anchor(page, bbox, "___")
+    doc.close()
+    assert abs(x - (85.57 + SIGNATURE_X_OFFSET_PT)) < 1.0
+
+
+def test_find_underscore_anchor_no_underscore_chars_falls_back_to_bbox_x0():
+    """Внутри bbox нет символов '_' вообще (напр. графическая линия без
+    текста, DocuSign-стиль) — откат на bbox.x0 как раньше."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((50, 400), "Lessor: /Ivanov/", fontsize=10)
+    bbox = (50.0, 390.0, 300.0, 405.0)
+    x, y_bottom, line_h = _find_underscore_anchor(page, bbox, "___Lessor")
     doc.close()
     assert abs(x - (50.0 + SIGNATURE_X_OFFSET_PT)) < 1.0
 

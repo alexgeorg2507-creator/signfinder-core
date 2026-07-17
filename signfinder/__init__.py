@@ -1,5 +1,37 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.18 (position, reported directly against a live signed PDF): a footer
+signature ("Заказчик____") sat too far left, overlapping the role word
+itself, while the same document's requisites-page signature ("____
+(Лебедев А.П.)") was positioned correctly.
+  - pdf/overlay.py: _find_underscore_anchor's case 1 (pattern starts with
+    `_`/`\\.`) used to trust bbox.x0 as the line's own position outright.
+    That assumption broke specifically for Fix-14's reverse-underscore
+    lookahead matches: _expand_line_bbox (finder.py) merges a label word
+    into the match's bbox whenever it sits directly flush against its own
+    underscore run with no gap ("Заказчик" immediately followed by
+    "____" in the footer) — correct and necessary for the Fix-14/14.1
+    geometric "is this our side" check, which wants the label included, but
+    wrong for placement, which needs the line's own x0, not the label's.
+    The two matches' bboxes never carried a per-match flag distinguishing
+    "clean line" from "line merged with a flush-adjacent label", so case 1
+    couldn't tell them apart — it now searches for the actual `_`/`.`
+    character inside the given bbox (same rawdict char-level method case 3
+    already used as a later fallback) and uses ITS x0, falling back to
+    bbox.x0 unchanged when no such character is found (graphical-only
+    lines, e.g. DocuSign). Verified against the real document: the footer
+    match's merged bbox (35.55-203.21, "Заказчик" + its own underscores)
+    now resolves to x=80.95 (the underscores' real start) instead of 35.55
+    (the word's start). No document/pattern-specific hardcoding — fixes the
+    general case of any bbox wider than its own line.
+  - Requisites-page placement (no flush-adjacent label to merge) is
+    unaffected — its bbox.x0 already was the line's own start, so the
+    rawdict search finds the same position it already had.
+  - 3 tests in test_overlay.py updated/added: the wide-bbox case now
+    asserts the real found position instead of the old (bug-preserving)
+    bbox.x0 passthrough; added a tight-bbox no-op case and a no-underscore-
+    found fallback case. Full suite: 156 passed.
+
 v1.20.17 (cosmetic, reported directly against a live signed PDF): auto-placed
 signature visibly larger than a manually-placed one left at the cabinet's own
 default (unresized) box.
@@ -324,7 +356,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.17"
+__version__ = "1.20.18"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────

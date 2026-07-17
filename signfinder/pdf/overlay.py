@@ -254,12 +254,38 @@ def _find_underscore_anchor(page, bbox, pattern: str, above_line: bool = False):
 
     # 1. Паттерн начинается с подчёркивания ИЛИ с точечной линии (\. = \.{5,}...).
     # LLM может генерировать (?:_{3,}...) — убираем (?:...) перед проверкой.
-    # Для обратных паттернов (линия стоит ДО названия: ".....\nInnowise") bbox
-    # из _find_signature_bbox уже клипирован к нужной колонке — x0 корректен.
+    # bbox может быть шире самой линии: _expand_line_bbox (finder.py) сливает
+    # контигуальный текст ПЕРЕД линией в один bbox, когда он физически впритык
+    # (напр. "Заказчик" + её же подчёркивание в футере без пробела между ними) —
+    # это нужно для geometric-проверки "наша ли это сторона" (Fix-14/14.1), но
+    # для позиции подписи нужен x0 именно самой линии, не слитого лейбла.
+    # Ищем реальный символ линии внутри bbox (rawdict char-level, тот же метод
+    # что и case 3 ниже) и берём его x0; не нашли — bbox.x0 как раньше
+    # (обычный случай без слияния, напр. когда перед линией ничего впритык нет).
     _pat_norm = re.sub(r'^\(\?:', '', pattern)
     if _pat_norm.startswith("_") or _pat_norm.startswith("\\."):
+        target_ch = "." if _pat_norm.startswith("\\.") else "_"
+        line_x0 = None
+        try:
+            data = page.get_text("rawdict", flags=0)
+            for block in data.get("blocks", []):
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        for ch in span.get("chars", []):
+                            if ch.get("c") != target_ch:
+                                continue
+                            cb = ch.get("bbox", (0, 0, 0, 0))
+                            ch_yc = (cb[1] + cb[3]) / 2
+                            if ch_yc < y0 - 2 or ch_yc > y1 + 2:
+                                continue
+                            if cb[0] < x0 - 5 or cb[0] > x1:
+                                continue
+                            if line_x0 is None or cb[0] < line_x0:
+                                line_x0 = float(cb[0])
+        except Exception:
+            pass
         y_pos = y0 if above_line else y1
-        return x0 + SIGNATURE_X_OFFSET_PT, y_pos, line_height
+        return (line_x0 if line_x0 is not None else x0) + SIGNATURE_X_OFFSET_PT, y_pos, line_height
 
     # 2. Текстовый префикс роли (напр. "Заказчик") — самый надёжный метод:
     #    находим текст на странице, берём его правый край rr.x1
