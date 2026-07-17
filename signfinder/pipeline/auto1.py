@@ -729,29 +729,46 @@ def _add_docusign_tab_patterns(
 
 def _filter_by_our_side_context(
     matches: list,
-    doc_pages: list,
+    doc,
     our_side: dict,
     trusted_patterns: "set[str] | None" = None,
 ) -> list:
-    """Оставить только матчи где в 80 символах ПЕРЕД якорем есть наши синонимы.
+    """Оставить только матчи, которые реально относятся к нашей стороне.
 
     Фильтр применяется точечно — только к матчам, физически попадающим в
-    двухколоночную зону: либо вся страница dual_column_vertical (старое
-    поведение при документ-уровне dual layout), либо локальная Y-полоса из
-    ParsedPage.dual_zones (напр. строка футера "Заказчик___  Подрядчик___"
+    двухколоночную зону: либо вся страница dual_column_vertical (документ-
+    уровне dual layout — типично двуязычный документ), либо локальная Y-полоса
+    из ParsedPage.dual_zones (напр. строка футера "Заказчик___ Подрядчик___"
     на однокол­оночной странице — см. _detect_local_dual_zones в parser.py).
     Матчи вне таких зон не трогаем: там нет двухколоночной двусмысленности,
     фильтровать нечего и незачем рисковать ложным срабатыванием.
 
-    trusted_patterns — паттерны которые всегда доверенные (signer_pats):
-    они уже заякорены на ФИО нашего подписанта, контекст проверять не нужно.
+    Для local_dual_zone матчей (Fix-14.1) — geometric-проверка: реально ли
+    один из наших синонимов лежит ВНУТРИ bbox матча (page.get_textbox), а не
+    текстовая позиция "80 символов до". Заменяет старую текстовую проверку
+    ИМЕННО для этого случая — подтверждено на двух разных реальных документах,
+    что она там структурно не может работать: повторяющийся футер/шапка с
+    двумя сторонами на одной строке в обоих случаях извлекается PDF-парсером
+    (LibreOffice DOCX→PDF) РАНЬШЕ текста тела страницы (page.text начинается
+    с этого блока, не с заголовка/первого абзаца) — "N символов текстовой
+    позиции до матча" тогда не имеет отношения к "текст выше на странице",
+    независимо от того, какой паттерн нашёл этот матч (не только паттерны из
+    _add_reverse_underscore_patterns — ЛЮБОЙ паттерн, регекс-сгенерированный
+    LLM или детерминированный, упирается в то же самое). _expand_line_bbox
+    (finder.py) уже сливает контигуальный текст на ТОЙ ЖЕ стороне в bbox
+    матча, когда он там физически есть — этим bbox надёжно самоидентифицирует
+    свою колонку.
 
-    Смотрим только назад — не вперёд. Это исключает ситуацию когда Innowise
-    стоит ПОСЛЕ клиентского якоря и попадает в двунаправленное окно.
+    Для dual_column_vertical (whole-page, отдельный сценарий — типично
+    двуязычный документ, не "две стороны на одной строке футера") — старая
+    текстовая проверка остаётся: нет данных что она там сломана, трогать не
+    стал.
 
-    Структура текста: КЛИЕНТ_ЯКОРЬ ... Innowise_ЯКОРЬ
-    → для клиентского якоря 80 символов назад — нет Innowise → фильтруется.
-    → для Innowise якоря 80 символов назад — есть "Innowise Group:" → остаётся.
+    trusted_patterns — паттерны которые всегда доверенные (signer_pats,
+    _add_reverse_underscore_patterns): они уже верифицированы отдельно
+    (ФИО подписанта однозначно наше; reverse-underscore уже прошли
+    собственную geometric-проверку в _verify_reverse_underscore_matches) —
+    контекст/geometric проверять здесь незачем.
     """
     if not our_side or not matches:
         return matches
@@ -771,56 +788,87 @@ def _filter_by_our_side_context(
     if not synonyms:
         return matches
 
+    doc_pages = doc.pages
     zone_margin = 4.0  # pt — допуск на неточность bbox матча относительно найденной зоны
 
-    result = []
-    for m in matches:
-        # Доверенные паттерны (по ФИО подписанта) — не фильтруем, они и так специфичны
-        if trusted_patterns and getattr(m, "pattern", "") in trusted_patterns:
-            result.append(m)
-            continue
+    pdf_doc = None
 
-        page_idx = getattr(m, "page_hint", None) or getattr(m, "page", None)
-        if page_idx is None:
-            result.append(m)
-            continue
-        try:
-            page = doc_pages[int(page_idx)]
-        except (IndexError, TypeError, ValueError):
-            result.append(m)
-            continue
+    def _pdf():
+        nonlocal pdf_doc
+        if pdf_doc is None:
+            import fitz
+            pdf_doc = fitz.open(stream=doc.pdf_bytes, filetype="pdf")
+        return pdf_doc
 
-        in_zone = getattr(page, "layout", "single_column") == "dual_column_vertical"
-        if not in_zone:
+    try:
+        result = []
+        for m in matches:
+            # Доверенные паттерны (по ФИО подписанта / уже geometric-верифицированные) —
+            # не фильтруем, они и так специфичны
+            if trusted_patterns and getattr(m, "pattern", "") in trusted_patterns:
+                result.append(m)
+                continue
+
+            page_idx = getattr(m, "page_hint", None) or getattr(m, "page", None)
+            if page_idx is None:
+                result.append(m)
+                continue
+            try:
+                page_idx_int = int(page_idx)
+                page = doc_pages[page_idx_int]
+            except (IndexError, TypeError, ValueError):
+                result.append(m)
+                continue
+
+            page_is_dual = getattr(page, "layout", "single_column") == "dual_column_vertical"
+            local_zone = None
             bbox = getattr(m, "bbox", None)
-            if bbox:
+            if not page_is_dual and bbox:
                 m_y0, m_y1 = bbox[1], bbox[3]
-                for (z_y0, z_y1, _gx) in getattr(page, "dual_zones", None) or []:
-                    if m_y0 < z_y1 + zone_margin and m_y1 > z_y0 - zone_margin:
-                        in_zone = True
+                for z in getattr(page, "dual_zones", None) or []:
+                    if m_y0 < z[1] + zone_margin and m_y1 > z[0] - zone_margin:
+                        local_zone = z
                         break
-        if not in_zone:
-            result.append(m)
-            continue
 
-        page_text = page.text.lower()
-        # SignMatch использует 'context', TextAnchor — 'anchor_text'
-        ctx_text = (getattr(m, "context", "") or getattr(m, "anchor_text", "") or "").strip().lower()
-        match_pos = page_text.find(ctx_text[:20]) if ctx_text else -1
+            if not page_is_dual and local_zone is None:
+                result.append(m)
+                continue
 
-        if match_pos == -1:
-            result.append(m)
-            continue
+            if local_zone is not None and bbox:
+                try:
+                    import fitz
+                    box_text = _pdf()[page_idx_int].get_textbox(fitz.Rect(*bbox)).lower()
+                    if any(syn in box_text for syn in synonyms):
+                        result.append(m)
+                    # else: явно чужая колонка — фильтруем
+                    continue
+                except Exception as e:
+                    sys.stderr.write(f"[auto1] our-side geometric check failed: {e}\n")
+                    # падаем в текстовую проверку ниже
 
-        ctx_start = max(0, match_pos - 80)
-        ctx_end = match_pos  # только то что ПЕРЕД якорем
-        ctx = page_text[ctx_start:ctx_end]
+            # Текстовая проверка — для dual_column_vertical (whole-page) и как
+            # fallback если geometric-проверка выше не смогла отработать
+            page_text = page.text.lower()
+            # SignMatch использует 'context', TextAnchor — 'anchor_text'
+            ctx_text = (getattr(m, "context", "") or getattr(m, "anchor_text", "") or "").strip().lower()
+            match_pos = page_text.find(ctx_text[:20]) if ctx_text else -1
 
-        if any(syn in ctx for syn in synonyms):
-            result.append(m)
-        # else: фильтруем — это блок другой стороны
+            if match_pos == -1:
+                result.append(m)
+                continue
 
-    return result
+            ctx_start = max(0, match_pos - 80)
+            ctx_end = match_pos  # только то что ПЕРЕД якорем
+            ctx = page_text[ctx_start:ctx_end]
+
+            if any(syn in ctx for syn in synonyms):
+                result.append(m)
+            # else: фильтруем — это блок другой стороны
+
+        return result
+    finally:
+        if pdf_doc is not None:
+            pdf_doc.close()
 
 
 def _drop_marker_only_when_signer_present(matches: list, signer_pat_set: "set[str]") -> list:
@@ -1126,7 +1174,7 @@ def run_pipeline_auto_1(
     if our_side and (doc_is_dual or has_local_zones):
         before = len(matches)
         matches = _filter_by_our_side_context(
-            matches, doc.pages, our_side,
+            matches, doc, our_side,
             trusted_patterns=set(signer_pats) | reverse_underscore_pats,
         )
         debug["our_side_filter"] = {

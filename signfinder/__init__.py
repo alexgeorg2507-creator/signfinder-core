@@ -1,5 +1,49 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.16 (Fix-14.1, generalized after a second real document hit the same
+failure mode through DIFFERENT patterns — not just _add_reverse_underscore_patterns'
+own):
+  - Second document, same symptom (footer signature found only on the
+    requisites page, not on the per-page "Клиент____ Представитель____"
+    footer). pipeline_debug showed the new v1.20.15 insurance layer DID work
+    correctly on its own patterns (12 matches -> 8 after
+    _verify_reverse_underscore_matches) — but the *existing*
+    _filter_by_our_side_context then dropped 8 -> 2 -> 1, because several of
+    run_step4's own LLM-generated patterns for this document
+    (`Клиент[\\s]{0,5}_{3,}`, `_{3,}\\s*Клиент`, etc.) hit the exact same
+    footer, and those patterns weren't in trusted_patterns, so they went
+    through the OLD text-offset-based context check — which fails for the
+    same structural reason v1.20.15 already diagnosed for its own patterns:
+    this document's footer is ALSO extracted before the page's body text
+    (visible directly in pipeline_debug.prompt_step4's "ПЕРВАЯ СТРАНИЦА"
+    excerpt, which starts with the footer line, not the document title).
+  - Confirms the v1.20.15 fix was correct but too narrow — the underlying
+    problem (text offset position != visual position for this document
+    class) affects ANY pattern that matches inside a local_dual_zone, not
+    just the two deterministic ones added there. Patching trusted_patterns
+    per new pattern source would be whack-a-mole; the user explicitly asked
+    for a general fix, not another document/pattern-specific patch.
+  - pipeline/auto1.py: _filter_by_our_side_context reworked for the
+    local_dual_zone case (not dual_column_vertical whole-page, left alone —
+    a different scenario, no evidence it's broken). Generalizes v1.20.15's
+    own technique: page.get_textbox(match.bbox) — does the match's own
+    (already _expand_line_bbox-expanded) rectangle actually contain one of
+    our synonyms? Position-based, so it doesn't care what extraction order
+    produced page.text. Falls back to the old text-offset check only if the
+    geometric read itself fails (exception). Signature changed from
+    `doc_pages: list` to `doc: ParsedDocument` (needed for doc.pdf_bytes to
+    open the page for get_textbox) — one call site, updated.
+  - reverse_underscore_pats stay in trusted_patterns (bypass this filter
+    entirely) since _verify_reverse_underscore_matches already ran the same
+    geometric check on them — avoids redundant PDF reads, not a correctness
+    requirement.
+  - test_our_side_filter.py rewritten for the new signature; added a test
+    that deliberately feeds a page.text with zero relationship to the real
+    content, proving the local_dual_zone path no longer depends on it.
+  - Re-verified end-to-end against the original v1.20.15 document
+    (signed_1ДоговорЛебедев.pdf) to confirm no regression: still 10 raw -> 5
+    correct, stable across repeated runs. Full suite: 154 passed.
+
 v1.20.15 (Fix-14, deterministic footer coverage — redesigned from the task's
 own draft after its cited evidence turned out to contradict it):
   - pipeline/auto1.py: _add_reverse_underscore_patterns() + a mandatory
@@ -260,7 +304,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.15"
+__version__ = "1.20.16"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
