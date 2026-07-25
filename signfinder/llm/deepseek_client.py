@@ -11,7 +11,7 @@ from signfinder.utils.logging import get_logger
 logger = get_logger(__name__)
 
 BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 class DeepSeekClient(LLMClient):

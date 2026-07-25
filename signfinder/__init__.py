@@ -1,5 +1,18 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.19 (bugfix, reported on signfinder-cab-test): Step 3 ("find our
+side") failed on every document with "LLM не ответил или невалидный
+JSON". Cloud Logging showed the real cause was masked by that generic
+message: `DeepSeek API call failed: Error code: 400 - The supported API
+model names are deepseek-v4-pro or deepseek-v4-flash, but you passed
+deepseek-chat`. DeepSeek deprecated the `deepseek-chat` model name on
+their side; `llm/deepseek_client.py`'s DEFAULT_MODEL was still hardcoded
+to it with no override path (llm/factory.py instantiates DeepSeekClient()
+with no model argument). Not a secret/env/IAM issue — DEEPSEEK_API_KEY
+was confirmed live and correctly wired on Cloud Run before this fix.
+  - llm/deepseek_client.py: DEFAULT_MODEL "deepseek-chat" ->
+    "deepseek-v4-flash" (owner's choice over deepseek-v4-pro).
+
 v1.20.18 (position, reported directly against a live signed PDF): a footer
 signature ("Заказчик____") sat too far left, overlapping the role word
 itself, while the same document's requisites-page signature ("____
@@ -356,7 +369,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.18"
+__version__ = "1.20.19"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
