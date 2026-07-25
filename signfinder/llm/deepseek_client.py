@@ -50,7 +50,20 @@ class DeepSeekClient(LLMClient):
         except Exception as e:
             logger.error("DeepSeek API call failed: %s", e)
             raise LLMError(str(e)) from e
-        return (resp.choices[0].message.content or "").strip()
+        choice = resp.choices[0]
+        content = (choice.message.content or "").strip()
+        if not content:
+            reasoning = getattr(choice.message, "reasoning_content", None)
+            logger.warning(
+                "DeepSeek returned empty content (model=%s, finish_reason=%s, "
+                "has_reasoning_content=%s, reasoning_len=%s, usage=%s)",
+                model or self.model,
+                getattr(choice, "finish_reason", None),
+                reasoning is not None,
+                len(reasoning) if reasoning else 0,
+                getattr(resp, "usage", None),
+            )
+        return content
 
     def complete_structured(
         self,

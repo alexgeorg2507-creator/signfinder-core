@@ -184,6 +184,9 @@ def _call_llm_json(
         return _json.loads(cleaned)
     except _json.JSONDecodeError as e:
         sys.stderr.write(f"[auto1] JSON parse error in {capture_key}: {e}\n")
+        sys.stderr.write(
+            f"[auto1] raw_{capture_key} len={len(raw)} preview={raw[:300]!r}\n"
+        )
         return None
 
 

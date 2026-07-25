@@ -1,5 +1,29 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.20 (diagnostic logging, not a fix): after v1.20.19 switched DeepSeek
+to deepseek-v4-flash, Step 3 started working but Step 4 ("generate regex
+patterns") started failing on every document with "LLM не вернул
+паттерны". Cloud Logging on test showed both DeepSeek calls per request
+return HTTP 200, but Step 4's JSON parse fails with
+`json.JSONDecodeError: Expecting value: line 1 column 1 (char 0)` — the
+exact signature of parsing an empty string, i.e. resp.choices[0]
+.message.content came back empty despite a successful HTTP response.
+Step 3 (smaller prompt, max_tokens=1500) is unaffected; only Step 4
+(larger prompt asking for up to 15 regex patterns, max_tokens=3000) hits
+this. Two live hypotheses, can't distinguish without seeing the raw API
+response: (1) deepseek-v4-flash is a reasoning-style model that spends
+max_tokens on hidden reasoning before ever writing visible content on the
+harder task, (2) a content filter is silently blocking this specific
+prompt/response combination. Neither raw response text nor finish_reason
+was being logged anywhere, so there was no way to tell them apart.
+  - llm/deepseek_client.py: complete() now logs (at WARNING, metadata
+    only — no prompt/content/keys) model, finish_reason,
+    has_reasoning_content, reasoning_len, and token usage whenever
+    content comes back empty.
+  - pipeline/auto1.py: _call_llm_json() now logs a raw response preview
+    (first 300 chars) to stderr whenever JSON parsing fails, for any
+    step, not just this one.
+
 v1.20.19 (bugfix, reported on signfinder-cab-test): Step 3 ("find our
 side") failed on every document with "LLM не ответил или невалидный
 JSON". Cloud Logging showed the real cause was masked by that generic
@@ -369,7 +393,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.19"
+__version__ = "1.20.20"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
