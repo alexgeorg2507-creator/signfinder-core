@@ -1,5 +1,26 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.22 (owner decision, 2026-07-25): v1.20.21 disabled DeepSeek
+reasoning only for Step 4. Owner's call: disable it everywhere in the
+pipeline, not per-step — reasoning_content is never read anywhere in
+this codebase (only the visible `content` is consumed), so keeping it on
+for any step is pure token/latency cost with no corresponding benefit,
+regardless of whether that step has semantic ambiguity or not.
+  - llm/base.py + all 4 provider clients: LLMClient.complete()'s
+    `reasoning` parameter default flipped True -> False.
+  - pipeline/auto1.py: _call_llm_json()'s own `reasoning` default flipped
+    True -> False, so Step 3 (which doesn't pass the parameter
+    explicitly) now also gets reasoning disabled without needing its own
+    call site touched. Step 4's explicit reasoning=False (v1.20.21) is
+    now redundant with the new default but left in place — it documents
+    the specific incident at the exact call site it happened on.
+  - Every other complete() call site in the package (pipeline/
+    party_resolver.py, pipeline/validator.py, pipeline/
+    pattern_extractor.py x3, pipeline/llm_finder.py, review/reviewer.py,
+    pdf/language.py) doesn't pass `reasoning=` explicitly either, so all
+    of them now inherit reasoning=False from the same default flip —
+    no call sites needed editing beyond the two files above.
+
 v1.20.21 (fix, per owner decision — not raising max_tokens): v1.20.20's
 diagnostic logging confirmed the exact cause of Step 4 failing —
 deepseek-v4-flash defaults to Thinking mode, and on the real test document
@@ -425,7 +446,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.21"
+__version__ = "1.20.22"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────

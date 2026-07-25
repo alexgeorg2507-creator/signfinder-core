@@ -58,7 +58,7 @@ class AnthropicClient(LLMClient):
         max_tokens: int = 1000,
         model: Optional[str] = None,
         temperature: float = 0.0,
-        reasoning: bool = True,
+        reasoning: bool = False,
     ) -> str:
         # reasoning: no extended-thinking toggle wired up for the models used
         # here (DEFAULT_MODEL is not a thinking-variant) — accepted for

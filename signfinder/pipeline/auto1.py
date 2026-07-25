@@ -158,15 +158,15 @@ def _call_llm_json(
     max_tokens: int,
     debug: dict,
     capture_key: str,
-    reasoning: bool = True,
+    reasoning: bool = False,
 ) -> Optional[dict]:
     """Вызов LLM с парсингом JSON. Складывает prompt/raw в debug dict.
 
     Точная копия логики _call_llm_json из оригинала, но через LLMClient.
 
-    reasoning: см. LLMClient.complete() — False для механических задач
-    без смысловой неопределённости (генерация паттернов по шаблону), где
-    extended-thinking только тратит max_tokens впустую.
+    reasoning: см. LLMClient.complete() — по умолчанию выключен на всём
+    пайплайне (владелец 2026-07-25: reasoning_content нигде не читается,
+    смысла платить за него нет ни на одном из шагов).
     """
     import json as _json
 

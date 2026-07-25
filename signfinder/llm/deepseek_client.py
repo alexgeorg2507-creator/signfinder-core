@@ -38,11 +38,12 @@ class DeepSeekClient(LLMClient):
         max_tokens: int = 1000,
         model: Optional[str] = None,
         temperature: float = 0.0,
-        reasoning: bool = True,
+        reasoning: bool = False,
     ) -> str:
         client = self._ensure_client()
-        # DeepSeek v4-family: dual Thinking/Non-Thinking mode, defaults to
-        # enabled. See https://api-docs.deepseek.com/guides/thinking_mode/
+        # DeepSeek v4-family: dual Thinking/Non-Thinking mode, API defaults
+        # to enabled — we default the other way (see LLMClient.complete()).
+        # See https://api-docs.deepseek.com/guides/thinking_mode/
         extra_body = None if reasoning else {"thinking": {"type": "disabled"}}
         try:
             resp = client.chat.completions.create(
