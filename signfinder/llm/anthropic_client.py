@@ -58,7 +58,11 @@ class AnthropicClient(LLMClient):
         max_tokens: int = 1000,
         model: Optional[str] = None,
         temperature: float = 0.0,
+        reasoning: bool = True,
     ) -> str:
+        # reasoning: no extended-thinking toggle wired up for the models used
+        # here (DEFAULT_MODEL is not a thinking-variant) — accepted for
+        # interface parity with LLMClient.complete(), currently a no-op.
         client = self._ensure_client()
         use_model = model or self.model
         try:

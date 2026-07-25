@@ -38,14 +38,19 @@ class DeepSeekClient(LLMClient):
         max_tokens: int = 1000,
         model: Optional[str] = None,
         temperature: float = 0.0,
+        reasoning: bool = True,
     ) -> str:
         client = self._ensure_client()
+        # DeepSeek v4-family: dual Thinking/Non-Thinking mode, defaults to
+        # enabled. See https://api-docs.deepseek.com/guides/thinking_mode/
+        extra_body = None if reasoning else {"thinking": {"type": "disabled"}}
         try:
             resp = client.chat.completions.create(
                 model=model or self.model,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 messages=[{"role": "user", "content": prompt}],
+                extra_body=extra_body,
             )
         except Exception as e:
             logger.error("DeepSeek API call failed: %s", e)

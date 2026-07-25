@@ -39,7 +39,11 @@ class GeminiClient(LLMClient):
         max_tokens: int = 1000,
         model: Optional[str] = None,
         temperature: float = 0.0,
+        reasoning: bool = True,
     ) -> str:
+        # reasoning: no extended-thinking toggle wired up for the models used
+        # here (DEFAULT_MODEL is not a thinking variant) — accepted for
+        # interface parity with LLMClient.complete(), currently a no-op.
         model_obj = self._ensure_client()
         try:
             response = model_obj.generate_content(prompt)

@@ -1,5 +1,37 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.20.21 (fix, per owner decision — not raising max_tokens): v1.20.20's
+diagnostic logging confirmed the exact cause of Step 4 failing —
+deepseek-v4-flash defaults to Thinking mode, and on the real test document
+spent its entire max_tokens=3000 budget on reasoning_tokens
+(reasoning_tokens=3000, accepted_prediction_tokens=None, finish_reason=
+length) before ever writing visible content. Step 4 (generate up to 15
+regex patterns from a fixed template) has no semantic ambiguity that
+would benefit from reasoning — it's a mechanical structured-output task.
+DeepSeek's own docs confirm both v4-pro and v4-flash support a documented
+non-thinking mode (https://api-docs.deepseek.com/guides/thinking_mode/,
+extra_body={"thinking": {"type": "disabled"}}); there's no separate
+non-reasoning model to switch to (deepseek-chat, the old default, is the
+deprecated model from v1.20.18/19).
+  - llm/base.py: LLMClient.complete() gains `reasoning: bool = True`.
+  - llm/deepseek_client.py: complete() passes
+    extra_body={"thinking": {"type": "disabled"}} when reasoning=False.
+  - llm/{anthropic,openai,gemini}_client.py: accept `reasoning` for
+    interface parity, no-op (none of the models used here are
+    reasoning/thinking variants).
+  - pipeline/auto1.py: _call_llm_json() takes and forwards `reasoning`.
+    run_step4() now calls it with reasoning=False. run_step3() unchanged
+    (reasoning=True, default) — its prompt is smaller, fits in 1500
+    tokens even with reasoning overhead, and resolving "which party are
+    we" among several named parties by alias/role/context is exactly the
+    kind of task reasoning is plausibly useful for; not touched without
+    a concrete reason to.
+  - Not part of the /v1/me/analyze hot path (run_pipeline_auto_1 only
+    calls step3+step4+step5, step5 has no LLM at all) so left alone here,
+    but carrying the same latent risk if a reasoning model is ever
+    active: pipeline/party_resolver.py, pipeline/validator.py,
+    pipeline/pattern_extractor.py, review/reviewer.py.
+
 v1.20.20 (diagnostic logging, not a fix): after v1.20.19 switched DeepSeek
 to deepseek-v4-flash, Step 3 started working but Step 4 ("generate regex
 patterns") started failing on every document with "LLM не вернул
@@ -393,7 +425,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.20"
+__version__ = "1.20.21"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────

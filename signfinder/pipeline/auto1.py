@@ -158,16 +158,21 @@ def _call_llm_json(
     max_tokens: int,
     debug: dict,
     capture_key: str,
+    reasoning: bool = True,
 ) -> Optional[dict]:
     """Вызов LLM с парсингом JSON. Складывает prompt/raw в debug dict.
 
     Точная копия логики _call_llm_json из оригинала, но через LLMClient.
+
+    reasoning: см. LLMClient.complete() — False для механических задач
+    без смысловой неопределённости (генерация паттернов по шаблону), где
+    extended-thinking только тратит max_tokens впустую.
     """
     import json as _json
 
     debug[f"prompt_{capture_key}"] = prompt
     try:
-        raw = llm.complete(prompt, max_tokens=max_tokens)
+        raw = llm.complete(prompt, max_tokens=max_tokens, reasoning=reasoning)
     except LLMError as e:
         sys.stderr.write(f"[auto1] LLM error in {capture_key}: {e}\n")
         debug[f"raw_{capture_key}"] = f"<LLMError: {e}>"
@@ -426,7 +431,14 @@ def run_step4(
         strategic_fragments=fragments,
         other_side_names=other_side_names or None,
     )
-    result = _call_llm_json(llm, prompt, max_tokens=3000, debug=debug, capture_key="step4")
+    # Step 4 — механическая генерация regex по шаблону, без смысловой
+    # неопределённости. Reasoning только жрёт max_tokens на скрытые
+    # токены и не оставляет места на видимый JSON-ответ (см. changelog
+    # v1.20.20 — на боевом документе весь бюджет 3000 ушёл в
+    # reasoning_tokens, finish_reason=length, content пуст).
+    result = _call_llm_json(
+        llm, prompt, max_tokens=3000, debug=debug, capture_key="step4", reasoning=False,
+    )
     if result is None:
         return None, "Шаг 4: LLM не вернул паттерны."
 

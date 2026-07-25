@@ -22,6 +22,7 @@ class LLMClient(ABC):
         max_tokens: int = 1000,
         model: Optional[str] = None,
         temperature: float = 0.0,
+        reasoning: bool = True,
     ) -> str:
         """Completion-запрос, возвращает текст ответа.
 
@@ -30,6 +31,14 @@ class LLMClient(ABC):
             max_tokens: лимит токенов
             model: переопределение модели
             temperature: temperature
+            reasoning: включить extended-thinking/reasoning режим у
+                провайдеров которые его поддерживают (сейчас — DeepSeek
+                v4-family, thinking mode). False — отключить: для
+                механических задач без смысловой неопределённости
+                (например, генерация regex по шаблону) reasoning только
+                тратит max_tokens на скрытые токены и не оставляет места
+                на видимый ответ. Провайдеры без такого переключателя
+                просто игнорируют параметр.
 
         Returns:
             Текст ответа без markdown-обёртки.
