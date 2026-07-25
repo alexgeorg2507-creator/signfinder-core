@@ -51,6 +51,12 @@ class PipelineResult:
     patterns: list = field(default_factory=list)     # list[str]
     matches: list = field(default_factory=list)      # list[SignMatch]
     anchors: list = field(default_factory=list)      # list[TextAnchor]
+    # Deal Cycle (2026-07-25): якоря контрагента, резолвятся в том же
+    # анализе best-effort — см. _build_counterparty_side. Пустые списки
+    # если контрагент не определился или для него ничего не нашлось;
+    # это не проваливает основной (нашей стороны) результат.
+    counterparty_anchors: list = field(default_factory=list)   # list[TextAnchor]
+    counterparty_matches: list = field(default_factory=list)   # list[SignMatch]
     debug: dict = field(default_factory=dict)        # prompt_step3/raw_step3/step4 и т.п.
 
 
@@ -411,8 +417,18 @@ def run_step4(
     llm: LLMClient,
     debug: dict,
     markers_override: dict | None = None,
+    capture_key: str = "step4",
 ) -> tuple:
-    """Шаг 4: сгенерировать regex-паттерны для нашей стороны.
+    """Шаг 4: сгенерировать regex-паттерны для стороны `our_side`.
+
+    `our_side` несмотря на имя — не обязательно инициатор: Deal Cycle
+    (2026-07-25) вызывает эту же функцию второй раз с dict контрагента
+    (см. _build_counterparty_side/_resolve_side_anchors в этом файле) —
+    вся логика ниже уже была параметрической по стороне.
+
+    capture_key: ключ debug-полей (prompt_/raw_) и pipeline_debug —
+    отдельный для второго вызова, чтобы не перезаписать debug нашей
+    стороны при вызове для контрагента.
 
     Returns:
         ([patterns], None)  — успех
@@ -437,7 +453,7 @@ def run_step4(
     # v1.20.20 — на боевом документе весь бюджет 3000 ушёл в
     # reasoning_tokens, finish_reason=length, content пуст).
     result = _call_llm_json(
-        llm, prompt, max_tokens=3000, debug=debug, capture_key="step4", reasoning=False,
+        llm, prompt, max_tokens=3000, debug=debug, capture_key=capture_key, reasoning=False,
     )
     if result is None:
         return None, "Шаг 4: LLM не вернул паттерны."
@@ -970,61 +986,86 @@ def _cluster_signature_blocks(
     return winners
 
 
-# ── Главная точка входа ───────────────────────────────────────────────────────
+def _build_counterparty_side(our_side: dict) -> Optional[dict]:
+    """Строит dict в форме our_side, но для КОНТРАГЕНТА — первая другая
+    сторона из all_parties (кроме нашей). Упрощение до 2 сторон — совпадает
+    со скоупом Deal Cycle (multi-signer >2 сторон отложен, DEAL_CYCLE_SPEC.md
+    §2). Позволяет переиспользовать _resolve_side_anchors для контрагента
+    без единой правки его тела — вся логика внутри уже была параметрической
+    по стороне, просто раньше вызывалась только с нашей.
+    """
+    our_entity = (our_side.get("legal_entity") or "").strip().lower()
+    our_roles = {r.strip().lower() for r in (our_side.get("roles") or []) if r}
+    all_parties = our_side.get("all_parties") or []
 
-def run_pipeline_auto_1(
+    for p in all_parties:
+        if not isinstance(p, dict):
+            continue
+        le = (p.get("legal_entity") or "").strip()
+        role = (p.get("role") or "").strip()
+        if le and le.lower() == our_entity:
+            continue
+        if role and role.lower() in our_roles:
+            continue
+        if not le and not role:
+            continue
+        return {
+            "legal_entity": le,
+            "roles": [role] if role else [],
+            "signer": (p.get("signer") or "").strip(),
+            "confidence": our_side.get("confidence", 0),
+            "all_parties": all_parties,
+        }
+    return None
+
+
+def _resolve_side_anchors(
     doc: ParsedDocument,
-    language: str,
+    side: dict,
+    prompt_language: str,
+    anchor_language: str,
+    effective_markers: dict,
     storage: StorageBackend,
     llm: LLMClient,
-    signer_id: str = "default",
-) -> PipelineResult:
-    """PipelineAuto1: step3 → step4 → step5 → TextAnchor[].
+    signer_id: str,
+    debug: dict,
+    capture_key: str = "step4",
+) -> tuple:
+    """Полный конвейер для ОДНОЙ стороны договора: Step4 (генерация regex) →
+    нормализация/дедуп/структурные/reverse-паттерны → Step5 (regex-поиск) →
+    verify/filter/cluster → SignMatch → TextAnchor.
 
-    Точное соответствие флоу из pages/5_🤖_Авто_подписание.py v1.8.
-    Без Streamlit: ошибки возвращаются через PipelineResult.error.
+    Извлечено из run_pipeline_auto_1 2026-07-25 (было инлайном, только для
+    нашей стороны, ради Deal Cycle — якоря контрагента нужны в том же
+    анализе, см. TASK_deal_cycle_E2.md). Вся логика ниже уже была
+    параметрической по 'our_side' до этого рефакторинга — переименование
+    в 'side' и вынос в функцию поведения не меняют, только делают вызываемой
+    дважды.
 
-    Параметры:
-        doc       — ParsedDocument (уже распарсен)
-        language  — 'ru'/'en'/'pl'
-        storage   — StorageBackend (для signer_profile, markers)
-        llm       — LLMClient
-        signer_id — id профиля подписанта (Модель Б)
+    side — dict формы our_side: legal_entity/roles/signer/all_parties.
+    prompt_language — язык(и) для промпта Step4 (может быть составным
+        "en, mk" для двуязычных документов, как effective_language).
+    anchor_language — язык для regex_match_to_anchor — всегда одиночный
+        канонический код (НЕ effective_language) — таким было поведение
+        до рефакторинга, сохранено как есть.
 
     Returns:
-        PipelineResult с ok=True и заполненными anchors/matches,
-        либо ok=False с error.
+        (anchors, matches, patterns, error)
+        error is None при успехе. При ошибке anchors=[] matches=[],
+        patterns — лучшее что успели собрать (может быть непустым, для
+        диагностики через debug).
     """
-    debug: dict = {}
-
-    # Для двуязычных документов: объединить маркеры всех языков
-    # и передать LLM составной хинт ("en, mk" вместо "en").
-    doc_languages = getattr(doc, "languages", []) or [language]
-    if len(doc_languages) > 1:
-        effective_language = ", ".join(doc_languages)
-        effective_markers = get_markers_for_languages(storage, doc_languages)
-    else:
-        effective_language = language
-        effective_markers = get_markers_for_language(storage, language)
-
-    debug["effective_language"] = effective_language
-    debug["doc_languages"] = doc_languages
-
-    # Step 3
-    our_side, err = run_step3(doc, effective_language, storage, llm, debug, signer_id=signer_id)
-    if err or our_side is None:
-        return PipelineResult(ok=False, error=err, debug=debug)
-
-    # Step 4
-    patterns, err = run_step4(doc, effective_language, our_side, storage, llm, debug,
-                              markers_override=effective_markers)
+    patterns, err = run_step4(
+        doc, prompt_language, side, storage, llm, debug,
+        markers_override=effective_markers, capture_key=capture_key,
+    )
     if err or patterns is None:
-        return PipelineResult(ok=False, error=err, our_side=our_side, debug=debug)
+        return [], [], [], err
 
     # ── Сборка итогового пула паттернов ──────────────────────────────────────
     # Приоритет: детерминированные паттерны по фамилии подписанта (заякорены на
     # подчёркивании) → корректная позиция подписи в блоке '____ Фамилия'.
-    signer_pats = _signer_underscore_patterns(storage, effective_language, our_side, signer_id=signer_id)
+    signer_pats = _signer_underscore_patterns(storage, prompt_language, side, signer_id=signer_id)
     debug["signer_underscore_patterns"] = signer_pats
 
     def _is_reverse_pattern(p: str) -> bool:
@@ -1128,7 +1169,7 @@ def run_pipeline_auto_1(
 
     # Обратные паттерны для точечных линий (\.{5,} → название компании)
     # Работает для всех документов, не только dual_column
-    final_patterns = _add_reverse_dot_patterns(final_patterns, our_side)
+    final_patterns = _add_reverse_dot_patterns(final_patterns, side)
     patterns = final_patterns
 
     # Fix-14: обратные паттерны для подчёркнутых линий (_{3,} → роль/юрлицо) —
@@ -1139,27 +1180,21 @@ def run_pipeline_auto_1(
     # geometric-верификация bbox сразу после step5, см. докстринги обеих
     # функций для полного обоснования формы паттерна.
     before_reverse_underscore = len(final_patterns)
-    final_patterns, reverse_underscore_pats = _add_reverse_underscore_patterns(final_patterns, our_side)
+    final_patterns, reverse_underscore_pats = _add_reverse_underscore_patterns(final_patterns, side)
     debug["reverse_underscore_patterns_added"] = len(final_patterns) - before_reverse_underscore
     patterns = final_patterns
 
     # DocuSign tab-маркеры (\t1\, \e1\) — место подписи без текстовых подчёркиваний
     page_texts_for_tabs = [p.text or "" for p in doc.pages]
-    final_patterns = _add_docusign_tab_patterns(final_patterns, our_side, page_texts_for_tabs)
+    final_patterns = _add_docusign_tab_patterns(final_patterns, side, page_texts_for_tabs)
     patterns = final_patterns
 
     debug["final_patterns"] = final_patterns
 
     # Step 5 — только find_signatures, без валидатора
-    matches = run_step5(doc, our_side, patterns)
+    matches = run_step5(doc, side, patterns)
     if matches is None:
-        return PipelineResult(
-            ok=False,
-            error="Шаг 5: Паттерны сгенерированы, но мест подписи не найдено.",
-            our_side=our_side,
-            patterns=patterns,
-            debug=debug,
-        )
+        return [], [], patterns, "Шаг 5: Паттерны сгенерированы, но мест подписи не найдено."
 
     debug["step5_matches_count"] = len(matches)
 
@@ -1168,7 +1203,7 @@ def run_pipeline_auto_1(
     # бюджета) — единственный надёжный способ отличить нашу колонку от чужой
     # это посмотреть, что реально лежит внутри итогового bbox матча.
     before_verify = len(matches)
-    matches = _verify_reverse_underscore_matches(matches, doc, our_side, reverse_underscore_pats)
+    matches = _verify_reverse_underscore_matches(matches, doc, side, reverse_underscore_pats)
     debug["reverse_underscore_verify"] = {
         "before": before_verify,
         "after": len(matches),
@@ -1186,10 +1221,10 @@ def run_pipeline_auto_1(
     # текстовая позиция матча не совпадает с "текстом выше на странице".
     doc_is_dual = getattr(doc, "layout", "single_column") == "dual_column_vertical"
     has_local_zones = any(getattr(p, "dual_zones", None) for p in doc.pages)
-    if our_side and (doc_is_dual or has_local_zones):
+    if side and (doc_is_dual or has_local_zones):
         before = len(matches)
         matches = _filter_by_our_side_context(
-            matches, doc, our_side,
+            matches, doc, side,
             trusted_patterns=set(signer_pats) | reverse_underscore_pats,
         )
         debug["our_side_filter"] = {
@@ -1205,13 +1240,7 @@ def run_pipeline_auto_1(
         }
 
     if not matches:
-        return PipelineResult(
-            ok=False,
-            error="Шаг 5: После фильтрации по контексту нашей стороны мест подписи не осталось.",
-            our_side=our_side,
-            patterns=patterns,
-            debug=debug,
-        )
+        return [], [], patterns, "Шаг 5: После фильтрации по контексту нашей стороны мест подписи не осталось."
 
     # Приоритет ФИО подписанта: в колонке, где есть матч заякоренный на нашем
     # подписанте, убираем company/marker-only матчи (маркер мог принадлежать
@@ -1226,15 +1255,15 @@ def run_pipeline_auto_1(
     # Кластеризация блоков подписи + выбор по приоритету синонима.
     # Якоря в вертикальном радиусе ~60pt с X-перекрытием = ОДИН блок = ОДНА подпись.
     # Победитель — чей синоним РАНЬШЕ в порядке профиля (company → signer → roles).
-    if our_side:
+    if side:
         aliases_ordered: list[str] = []
-        le = our_side.get("legal_entity", "")
+        le = side.get("legal_entity", "")
         if le:
             aliases_ordered.append(le)
-        signer = our_side.get("signer", "")
+        signer = side.get("signer", "")
         if signer:
             aliases_ordered.append(signer)
-        for r in (our_side.get("roles") or []):
+        for r in (side.get("roles") or []):
             if r:
                 aliases_ordered.append(r)
 
@@ -1251,7 +1280,7 @@ def run_pipeline_auto_1(
     empty_pattern = 0
     for m in matches:
         try:
-            anchor = regex_match_to_anchor(m, m.page, language)
+            anchor = regex_match_to_anchor(m, m.page, anchor_language)
             if not (anchor.generated_pattern or "").strip():
                 empty_pattern += 1
             anchors.append(anchor)
@@ -1262,12 +1291,93 @@ def run_pipeline_auto_1(
     # привязки (начинается с '_' → x0; иначе текст-префикс). Пустой → fallback case 5.
     debug["anchors_empty_pattern"] = empty_pattern
 
+    return anchors, matches, patterns, None
+
+
+# ── Главная точка входа ───────────────────────────────────────────────────────
+
+def run_pipeline_auto_1(
+    doc: ParsedDocument,
+    language: str,
+    storage: StorageBackend,
+    llm: LLMClient,
+    signer_id: str = "default",
+) -> PipelineResult:
+    """PipelineAuto1: step3 → step4 → step5 → TextAnchor[].
+
+    Точное соответствие флоу из pages/5_🤖_Авто_подписание.py v1.8.
+    Без Streamlit: ошибки возвращаются через PipelineResult.error.
+
+    Параметры:
+        doc       — ParsedDocument (уже распарсен)
+        language  — 'ru'/'en'/'pl'
+        storage   — StorageBackend (для signer_profile, markers)
+        llm       — LLMClient
+        signer_id — id профиля подписанта (Модель Б)
+
+    Returns:
+        PipelineResult с ok=True и заполненными anchors/matches,
+        либо ok=False с error.
+    """
+    debug: dict = {}
+
+    # Для двуязычных документов: объединить маркеры всех языков
+    # и передать LLM составной хинт ("en, mk" вместо "en").
+    doc_languages = getattr(doc, "languages", []) or [language]
+    if len(doc_languages) > 1:
+        effective_language = ", ".join(doc_languages)
+        effective_markers = get_markers_for_languages(storage, doc_languages)
+    else:
+        effective_language = language
+        effective_markers = get_markers_for_language(storage, language)
+
+    debug["effective_language"] = effective_language
+    debug["doc_languages"] = doc_languages
+
+    # Step 3
+    our_side, err = run_step3(doc, effective_language, storage, llm, debug, signer_id=signer_id)
+    if err or our_side is None:
+        return PipelineResult(ok=False, error=err, debug=debug)
+
+    anchors, matches, patterns, err = _resolve_side_anchors(
+        doc, our_side, effective_language, language, effective_markers,
+        storage, llm, signer_id, debug, capture_key="step4",
+    )
+    if err:
+        return PipelineResult(ok=False, error=err, our_side=our_side, patterns=patterns, debug=debug)
+
+    # Контрагент — best-effort в рамках того же анализа (владелец 2026-07-25,
+    # TASK_deal_cycle_E2.md: якоря обеих сторон нужны сразу, без повторного
+    # LLM-прохода при создании Deal — см. changelog). Упрощение до 2 сторон,
+    # см. _build_counterparty_side. Отдельный debug-dict — оба вызова
+    # _resolve_side_anchors пишут в одни и те же имена debug-полей, второй
+    # вызов иначе перезаписал бы debug нашей стороны. Провал контрагента
+    # НЕ проваливает основной результат.
+    counterparty_anchors: list = []
+    counterparty_matches: list = []
+    counterparty_side = _build_counterparty_side(our_side)
+    if counterparty_side:
+        cp_debug: dict = {}
+        cp_anchors, cp_matches, _cp_patterns, cp_err = _resolve_side_anchors(
+            doc, counterparty_side, effective_language, language, effective_markers,
+            storage, llm, signer_id, cp_debug, capture_key="step4_counterparty",
+        )
+        debug["counterparty_debug"] = cp_debug
+        if cp_err:
+            debug["counterparty_error"] = cp_err
+        else:
+            counterparty_anchors, counterparty_matches = cp_anchors, cp_matches
+    else:
+        debug["counterparty_error"] = "Контрагент не определён (all_parties не содержит другой стороны)"
+
     return PipelineResult(
         ok=True,
         our_side=our_side,
         patterns=patterns,
         matches=matches,
         anchors=anchors,
+        counterparty_anchors=counterparty_anchors,
+        counterparty_matches=counterparty_matches,
         debug=debug,
     )
 

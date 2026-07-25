@@ -1,5 +1,41 @@
 """SignFinder — core engine for automatic signature placement in contracts.
 
+v1.21.0 (new capability, owner decision 2026-07-25, TASK_deal_cycle_E2.md):
+resolves the counterparty's signature-location anchors in the SAME
+analyze pass as our own side — no second LLM round-trip later. Needed
+for Deal Cycle (SignfinderLand v2.0.0): the public signing page has to
+show the counterparty where to sign, but the pipeline previously only
+ever resolved "our_side" (Step 3 explicitly finds the authenticated
+user's own party; Step 4's prompt explicitly forbids using the other
+side's identifiers in generated patterns) — there was no data anywhere
+for a second party's signature spot.
+  - pipeline/auto1.py: extracted the Step4-result -> pattern refinement
+    (normalize/dedup/structural/multiline/reverse-dot/reverse-underscore/
+    docusign-tab) -> Step5 -> verify/filter/cluster -> SignMatch->TextAnchor
+    pipeline out of run_pipeline_auto_1 into _resolve_side_anchors(),
+    parameterized by `side` instead of hardcoded to `our_side`. Pure
+    extraction, no behavior change for the existing single-party path —
+    verified by the full suite passing unchanged (156/156) before adding
+    anything new.
+  - _build_counterparty_side(): picks the first other party from
+    Step 3's `all_parties` that doesn't match our own legal_entity/role.
+    Simplified to 2-party documents (multi-signer >2 sides is out of
+    scope, see DEAL_CYCLE_SPEC.md §2).
+  - run_pipeline_auto_1 now calls _resolve_side_anchors twice: once for
+    our_side (unchanged behavior), then best-effort for the counterparty
+    side into a separate debug dict (capture_key="step4_counterparty",
+    so it doesn't clobber our side's debug/prompt_step4/raw_step4 keys).
+    Counterparty failure never fails the primary result.
+  - run_step4() gained a `capture_key` parameter (was hardcoded "step4")
+    so the two calls don't collide in the debug dict.
+  - PipelineResult / AnalysisResult gained counterparty_anchors and
+    counterparty_matches (list, default empty).
+  - New tests/test_counterparty_side.py (10 tests) for
+    _build_counterparty_side. Full pipeline end-to-end (either side) has
+    no automated test — matches existing project convention, none of the
+    single-party path's steps have one either (run_pipeline_auto_1 is
+    verified against real documents by the owner, not mocked E2E).
+
 v1.20.22 (owner decision, 2026-07-25): v1.20.21 disabled DeepSeek
 reasoning only for Step 4. Owner's call: disable it everywhere in the
 pipeline, not per-step — reasoning_content is never read anywhere in
@@ -446,7 +482,7 @@ from signfinder.templates import (
 )
 from signfinder.traffic_light import classify
 
-__version__ = "1.20.22"
+__version__ = "1.21.0"
 
 
 # ── AnalysisResult ────────────────────────────────────────────────────────────
@@ -465,6 +501,11 @@ class AnalysisResult:
     fingerprint: Optional[dict[str, Any]] = None
     detected_signer_id: Optional[str] = None
     review: Optional[dict] = None   # результат pre-flight ревью (v1.20), None если не запрашивали
+    # Deal Cycle (2026-07-25): якоря контрагента, best-effort в том же
+    # анализе — см. pipeline/auto1.py _build_counterparty_side. Пустые
+    # списки если контрагент не определился или для него ничего не нашлось.
+    counterparty_anchors: list = field(default_factory=list)
+    counterparty_matches: list = field(default_factory=list)
 
 
 # ── SignFinder facade ─────────────────────────────────────────────────────────
@@ -659,6 +700,8 @@ class SignFinder:
             fingerprint=fp,
             detected_signer_id=detected_signer_id,
             review=review_dict,
+            counterparty_anchors=pipeline.counterparty_anchors,
+            counterparty_matches=pipeline.counterparty_matches,
         )
 
     def sign(
